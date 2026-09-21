@@ -270,7 +270,7 @@ describe('species lookup', () => {
 
     assert.equal(mock.pathOf(0), '/v2/species/srd_halfling/');
     assert.equal(race.name, 'Halfling');
-    assert.equal(race.document.key, 'srd-2014');
+    assert.equal(race.source.key, 'srd-2014');
   });
 
   test('a subspecies inherits size and speed from its parent species', async () => {

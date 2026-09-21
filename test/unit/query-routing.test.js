@@ -105,7 +105,7 @@ describe('endpoints that ignore every filter are matched locally', () => {
       mockWith(page(rows));
       await client[method](query, { limit: 2 });
 
-      assert.equal(mock.paramsOf().limit, '100',
+      assert.equal(mock.paramsOf().limit, '1000',
         'a caller limit must not truncate the page before local filtering');
     });
   }

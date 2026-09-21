@@ -1,4 +1,13 @@
 import NodeCache from 'node-cache';
+import {
+  ENDPOINTS, PAGE_MAX, type EndpointName, type EndpointSpec, type FilterValue, type FiltersFor
+} from './open5e-endpoints.js';
+import {
+  type ContentScope, type SourceLabel,
+  pickByName, resolveScope, sourceOf, toSourceLabel
+} from './sources.js';
+
+export type { ContentScope, SourceLabel } from './sources.js';
 
 // Enhanced interfaces based on Open5e API structure
 export interface EnhancedSpellData {
@@ -69,13 +78,14 @@ export interface EnhancedRaceData {
   url: string;
   
   // Enhanced fields
+  key: string;
   isSubrace: boolean;
   subraceOf?: string;
   detailedTraits: Array<{
     name: string;
     desc: string;
   }>;
-  document?: string;
+  source: SourceLabel;
 }
 
 export interface MonsterData {
@@ -113,8 +123,11 @@ export interface MonsterData {
 
 export interface WeaponData {
   name: string;
+  key: string;
+  category: 'simple' | 'martial';
   damageDice?: string;
   damageType?: string;
+  /** "20/60 feet" for ranged and thrown weapons; absent for melee-only ones. */
   range?: string;
   properties: {
     martial: boolean;
@@ -125,7 +138,11 @@ export interface WeaponData {
     heavy: boolean;
     twoHanded: boolean;
     versatile: boolean;
+    thrown: boolean;
   };
+  /** Every property as printed, with its detail: "Versatile (1d10)". */
+  propertyNames: string[];
+  source: SourceLabel;
   url: string;
 }
 
@@ -145,6 +162,7 @@ export interface MagicItemData {
 
 export interface ArmorData {
   name: string;
+  key: string;
   category: string;
   acDisplay: string;
   acBase: number;
@@ -152,26 +170,34 @@ export interface ArmorData {
   acCapDexMod: number | null;
   grantsStealthDisadvantage: boolean;
   strengthScoreRequired: number | null;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface FeatData {
   name: string;
+  key: string;
   description: string;
   prerequisite: string;
   hasPrerequisite: boolean;
+  /** GENERAL, ORIGIN, FIGHTING_STYLE, EPIC_BOON, ... as Open5e reports it. */
+  type: string;
   benefits: Array<{
     desc: string;
   }>;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface ConditionData {
   name: string;
+  key: string;
+  /** The description for the requested ruleset, else the 2014 one. */
   description: string;
-  document: string;
+  ruleset: string | null;
+  /** Every ruleset's wording, keyed by game system ("5e-2014", ...). */
+  descriptions: Record<string, string>;
+  source: SourceLabel;
   url: string;
 }
 
@@ -190,7 +216,7 @@ export interface BackgroundData {
   languages: string;
   equipment: string;
   feature: string;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
@@ -310,34 +336,110 @@ export class Open5eClient {
   }
 
   /**
-   * Open5e's filtering support is uneven, so name queries are routed per endpoint:
-   *  - `search=` does full-text matching on v1 (so "fireball" matches any spell
-   *    whose description mentions it) and is silently ignored on every v2 endpoint.
-   *  - `name__icontains=` filters correctly on most endpoints, but is also ignored
-   *    by /v2/armor/, /v2/weapons/ and /v2/conditions/.
-   * Those three collections are small (<100 rows), so we pull the full list and
-   * match on name locally instead.
+   * Local filtering has to see the whole server-filtered set, so it pages
+   * through at most this many full pages before giving up. Past that the
+   * caller must narrow the query with a server-side filter.
    */
-  private static readonly LOCAL_NAME_FILTER_PATHS = new Set([
-    '/v2/armor/', '/v2/weapons/', '/v2/conditions/'
-  ]);
+  private static readonly MAX_LOCAL_SCAN_PAGES = 5;
 
   /**
-   * Applies a name query to `params` for endpoints that filter server-side.
-   * Returns true when the caller must filter the response locally instead.
+   * The one way the client reads a collection. Each filter is looked up in
+   * ENDPOINTS: server filters become query parameters, local ones run over the
+   * fetched rows. A filter the endpoint does not declare is an error, never a
+   * parameter sent on the hope that Open5e honours it.
    */
-  private applyNameQuery(path: string, params: Record<string, any>, query?: string): boolean {
-    if (!query) return false;
-    if (Open5eClient.LOCAL_NAME_FILTER_PATHS.has(path)) return true;
-    params.name__icontains = query;
-    return false;
+  async query<E extends EndpointName>(
+    endpoint: E,
+    filters: FiltersFor<E> = {},
+    options: { limit?: number; ordering?: string } = {}
+  ): Promise<{ count: number; rows: any[]; hasMore: boolean }> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const params: Record<string, any> = {};
+    const locals: Array<[(row: any, value: any) => boolean, FilterValue]> = [];
+
+    for (const [filter, value] of Object.entries(filters) as Array<[string, FilterValue | undefined]>) {
+      if (value === undefined) continue;
+      const rule = spec.filters[filter];
+      if (!rule) throw new Error(`${spec.path} has no "${filter}" filter`);
+      if ('server' in rule) {
+        params[rule.server] = value;
+      } else if (!(typeof value === 'string' && value.trim() === '')) {
+        // A blank value means "no filter", as it does for server filters.
+        locals.push([rule.local, value]);
+      }
+    }
+
+    if (options.ordering !== undefined) {
+      if (!spec.ordering?.includes(options.ordering)) {
+        throw new Error(`Invalid ordering "${options.ordering}" for ${spec.path}. ` +
+          `Use one of: ${(spec.ordering ?? []).join(', ') || '(none supported)'}`);
+      }
+      params.ordering = options.ordering;
+    }
+
+    let result: { count: number; rows: any[]; hasMore: boolean };
+
+    if (locals.length === 0) {
+      if (options.limit !== undefined) params.limit = options.limit;
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, params);
+      result = { count: response.count, rows: response.results, hasMore: !!response.next };
+    } else {
+      const rows: any[] = [];
+      for (let page = 1; ; page++) {
+        const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
+          ...params, limit: PAGE_MAX, ...(page > 1 ? { page } : {})
+        });
+        rows.push(...response.results);
+        if (!response.next) break;
+        if (page >= Open5eClient.MAX_LOCAL_SCAN_PAGES) {
+          throw new Error(`Too many ${endpoint} to filter locally ` +
+            `(over ${PAGE_MAX * page}); narrow the query`);
+        }
+      }
+      const matched = rows.filter(row => locals.every(([match, value]) => match(row, value)));
+      const limited = options.limit !== undefined ? matched.slice(0, options.limit) : matched;
+      result = { count: matched.length, rows: limited, hasMore: limited.length < matched.length };
+    }
+
+    await this.embedDocuments(result.rows);
+    return result;
   }
 
-  /** Case-insensitive substring match on `name`, for endpoints that ignore filters. */
-  private filterByName<T extends { name?: string }>(rows: T[], query: string): T[] {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter(row => (row.name ?? '').toLowerCase().includes(needle));
+  private documentIndexPromise?: Promise<Map<string, SourceLabel>>;
+
+  /** Every Open5e document, by key. Fetched once per client. */
+  private documentIndex(): Promise<Map<string, SourceLabel>> {
+    this.documentIndexPromise ??= this.query('documents', {}, { limit: PAGE_MAX })
+      .then(({ rows }) => new Map(rows.map(row => [row.key, toSourceLabel(row)])))
+      .catch(error => {
+        this.documentIndexPromise = undefined; // do not cache a failure
+        throw error;
+      });
+    return this.documentIndexPromise;
+  }
+
+  /**
+   * Some list endpoints return `document` as a bare key. Replace it with the
+   * document object so every transform can label its source the same way.
+   */
+  private async embedDocuments(rows: any[]): Promise<void> {
+    if (!rows.some(row => typeof row?.document === 'string')) return;
+    const index = await this.documentIndex();
+    for (const row of rows) {
+      if (typeof row?.document !== 'string') continue;
+      const label = index.get(row.document);
+      row.document = {
+        key: row.document,
+        display_name: label?.name ?? row.document,
+        gamesystem: label?.ruleset ? { key: label.ruleset } : null
+      };
+    }
+  }
+
+  /** The document keys a scope allows (see resolveScope), or undefined for all. */
+  async scopeDocuments(scope?: ContentScope): Promise<string[] | undefined> {
+    if (!scope || (scope.ruleset === undefined && scope.sources === undefined)) return undefined;
+    return resolveScope(scope, [...(await this.documentIndex()).values()]);
   }
 
   private async makeRequest<T>(path: string, params?: Record<string, any>): Promise<T> {
@@ -694,13 +796,15 @@ export class Open5eClient {
     return filteredSpells.slice(0, 20); // Limit to 20 results for performance
   }
 
-  async searchRaces(query?: string, limit: number = 10): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    if (query) params.name__icontains = query;
-    params.limit = limit; // Kept small by default to avoid timeouts
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', params);
-    const rows = response.results;
+  async searchRaces(query?: string, options: {
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
+    const documents = await this.scopeDocuments(options.scope);
+    const response = await this.query('species', { name: query, documents }, {
+      limit: options.limit ?? 10 // kept small by default to avoid timeouts
+    });
+    const rows = response.rows;
 
     // Subspecies names often omit the parent ("Lightfoot" for Halfling), so a
     // name match alone misses them. Pull in the subspecies of every matched
@@ -708,30 +812,23 @@ export class Open5eClient {
     const parentKeys = query
       ? rows.filter(race => !race.is_subspecies && race.key).map(race => race.key as string)
       : [];
-    const subspecies = await this.fetchSubspecies(parentKeys);
+    const subspecies = await this.fetchSubspecies(parentKeys, documents);
     const seen = new Set(rows.map(race => race.key));
     const added = subspecies.filter(race => !seen.has(race.key));
 
     return {
       count: response.count + added.length,
       results: [...rows, ...added].map(race => this.transformRace(race)),
-      hasMore: !!response.next
+      hasMore: response.hasMore
     };
   }
 
-  /**
-   * Species whose parent is one of `parentKeys`. The filter must be
-   * `subspecies_of__key__in`: a bare `subspecies_of` is silently ignored and
-   * returns every species.
-   */
-  private async fetchSubspecies(parentKeys: string[]): Promise<any[]> {
+  /** Species whose parent is one of `parentKeys`. */
+  private async fetchSubspecies(parentKeys: string[], documents?: string[]): Promise<any[]> {
     if (parentKeys.length === 0) return [];
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', {
-      subspecies_of__key__in: parentKeys,
-      limit: 50
-    });
-    return response.results;
+    const response = await this.query('species', { subspeciesOf: parentKeys, documents }, { limit: 50 });
+    return response.rows;
   }
 
   private transformRace(race: any): EnhancedRaceData {
@@ -751,10 +848,11 @@ export class Open5eClient {
       url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
 
       // Enhanced fields
+      key: race.key ?? '',
       isSubrace: race.is_subspecies || false,
       subraceOf: race.subspecies_of,
       detailedTraits: traits,
-      document: race.document
+      source: sourceOf(race)
     };
   }
 
@@ -770,31 +868,12 @@ export class Open5eClient {
     return trait?.desc ?? '';
   }
 
-  /**
-   * Open5e holds several species with the same name ("Halfling" in both
-   * srd-2014 and srd-2024), plus subspecies and third-party entries whose names
-   * contain it ("Stoor Halfling", "Halfling Heritage"). Rank so that a lookup
-   * for "halfling" returns the core SRD species, not whichever row came first.
-   */
-  private static readonly SPECIES_DOCUMENT_PRIORITY = ['srd-2014', 'srd', 'srd-2024'];
-
-  private rankSpecies(race: EnhancedRaceData, needle: string): number[] {
-    const docKey = (race.document as any)?.key ?? '';
-    const docRank = Open5eClient.SPECIES_DOCUMENT_PRIORITY.indexOf(docKey);
-    return [
-      race.name.toLowerCase() === needle ? 0 : 1,
-      race.isSubrace ? 1 : 0,
-      docRank === -1 ? Open5eClient.SPECIES_DOCUMENT_PRIORITY.length : docRank,
-      race.name.length
-    ];
-  }
-
-  async getRaceDetails(raceName: string): Promise<EnhancedRaceData | null> {
+  async getRaceDetails(raceName: string, scope?: ContentScope): Promise<EnhancedRaceData | null> {
     const needle = raceName.trim().toLowerCase();
     if (!needle) return null;
 
     // Species keys ("srd_halfling") are not names, so fetch those directly.
-    if (/^[a-z0-9-]+_[a-z0-9-]+$/.test(needle)) {
+    if (Open5eClient.looksLikeKey(needle)) {
       try {
         const race = await this.makeRequest<any>(`/v2/species/${needle}/`);
         return this.inheritFromParentSpecies(this.transformRace(race));
@@ -803,22 +882,23 @@ export class Open5eClient {
       }
     }
 
-    // Fetch enough rows that the exact match cannot be crowded out by
-    // longer names containing the query.
-    const { results } = await this.searchRaces(raceName.trim(), 50);
-    const candidates = results.filter(race => race.name.toLowerCase().includes(needle));
-    if (candidates.length === 0) return null;
+    // Open5e holds several species with the same name ("Halfling" in both
+    // srd-2014 and srd-2024), plus subspecies and third-party entries whose
+    // names contain it ("Stoor Halfling", "Halfling Heritage"). Fetch enough
+    // rows that the exact match cannot be crowded out, then prefer a
+    // non-subspecies from the core SRD.
+    const { results } = await this.searchRaces(raceName.trim(), { limit: 50, scope });
+    const best = pickByName(results, needle, {
+      nameOf: race => race.name,
+      sourceKeyOf: race => race.source.key,
+      extraRank: race => [race.isSubrace ? 1 : 0]
+    });
+    return best ? this.inheritFromParentSpecies(best) : null;
+  }
 
-    const ranked = candidates
-      .map(race => ({ race, rank: this.rankSpecies(race, needle) }))
-      .sort((a, b) => {
-        for (let i = 0; i < a.rank.length; i++) {
-          if (a.rank[i] !== b.rank[i]) return a.rank[i] - b.rank[i];
-        }
-        return 0;
-      });
-
-    return this.inheritFromParentSpecies(ranked[0].race);
+  /** Open5e keys are `<document>_<slug>`: "srd_halfling", "srd-2024_elf". */
+  private static looksLikeKey(value: string): boolean {
+    return /^[a-z0-9-]+_[a-z0-9-]+$/.test(value);
   }
 
   /** Fills in size and speed a subspecies inherits from its parent species. */
@@ -973,52 +1053,62 @@ export class Open5eClient {
     return this.searchMonsters('', { cr: challengeRating, limit: 20 });
   }
 
-  // New weapon functionality
+  // Weapons
   async searchWeapons(query?: string, options: {
     isMartial?: boolean;
     isFinesse?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: WeaponData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    const filterLocally = this.applyNameQuery('/v2/weapons/', params, query);
-    if (options.isMartial !== undefined) params.is_martial = options.isMartial;
-    if (options.isFinesse !== undefined) params.is_finesse = options.isFinesse;
-    if (filterLocally) {
-      params.limit = 100; // small collection: fetch it all, then match on name locally
-    } else if (options.limit) {
-      params.limit = options.limit;
-    }
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/weapons/', params);
-
-    const transformedResults: WeaponData[] = response.results.map(weapon => ({
-      name: weapon.name,
-      damageDice: weapon.damage_dice,
-      damageType: weapon.damage_type,
-      range: weapon.range,
-      properties: {
-        martial: weapon.is_martial || false,
-        melee: weapon.is_melee || false,
-        ranged: weapon.is_ranged || false,
-        finesse: weapon.is_finesse || false,
-        light: weapon.is_light || false,
-        heavy: weapon.is_heavy || false,
-        twoHanded: weapon.is_two_handed || false,
-        versatile: weapon.is_versatile || false
-      },
-      url: weapon.url
-    }));
-
-    const matched = filterLocally && query
-      ? this.filterByName(transformedResults, query)
-      : transformedResults;
-    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
+    const response = await this.query('weapons', {
+      name: query,
+      martial: options.isMartial,
+      finesse: options.isFinesse,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
     return {
-      count: filterLocally ? matched.length : response.count,
-      results: limited,
-      hasMore: filterLocally ? limited.length < matched.length : !!response.next
+      count: response.count,
+      results: response.rows.map(weapon => this.transformWeapon(weapon)),
+      hasMore: response.hasMore
+    };
+  }
+
+  /**
+   * v2 weapons have no melee/martial/finesse booleans -- only `is_simple`, a
+   * range and a list of named properties -- so the flags are derived here.
+   */
+  private transformWeapon(weapon: any): WeaponData {
+    const properties: Array<{ name: string; detail: string | null }> =
+      (weapon.properties ?? []).map((p: any) => ({ name: p.property?.name ?? '', detail: p.detail ?? null }));
+    const has = (propertyName: string) =>
+      properties.some(p => p.name.toLowerCase() === propertyName.toLowerCase());
+
+    const thrown = has('Thrown');
+    const ranged = (weapon.range ?? 0) > 0 && !thrown;
+    const unit = weapon.distance_unit || 'feet';
+
+    return {
+      name: weapon.name,
+      key: weapon.key ?? '',
+      category: weapon.is_simple ? 'simple' : 'martial',
+      damageDice: weapon.damage_dice,
+      damageType: weapon.damage_type?.name,
+      range: weapon.range > 0 ? `${weapon.range}/${weapon.long_range} ${unit}` : undefined,
+      properties: {
+        martial: !weapon.is_simple,
+        melee: !ranged,
+        ranged: ranged || thrown,
+        finesse: has('Finesse'),
+        light: has('Light'),
+        heavy: has('Heavy'),
+        twoHanded: has('Two-Handed'),
+        versatile: has('Versatile'),
+        thrown
+      },
+      propertyNames: properties.map(p => p.detail ? `${p.name} (${p.detail})` : p.name),
+      source: sourceOf(weapon),
+      url: weapon.key ? `https://api.open5e.com/v2/weapons/${weapon.key}/` : ''
     };
   }
 
@@ -1099,31 +1189,25 @@ export class Open5eClient {
     return searchResults.results.length > 0 ? searchResults.results[0] : null;
   }
 
-  // Armor functionality
+  // Armor
   async searchArmor(query?: string, options: {
     category?: string;
     acBase?: number;
     stealthDisadvantage?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: ArmorData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    const filterLocally = this.applyNameQuery('/v2/armor/', params, query);
-    if (options.category) params.category = options.category;
-    if (options.acBase !== undefined) params.ac_base = options.acBase;
-    if (options.stealthDisadvantage !== undefined) {
-      params.grants_stealth_disadvantage = options.stealthDisadvantage;
-    }
-    if (filterLocally) {
-      params.limit = 100; // small collection: fetch it all, then match on name locally
-    } else if (options.limit) {
-      params.limit = options.limit;
-    }
+    const response = await this.query('armor', {
+      name: query,
+      category: options.category,
+      acBase: options.acBase,
+      stealthDisadvantage: options.stealthDisadvantage,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/armor/', params);
-
-    const transformedResults: ArmorData[] = response.results.map(armor => ({
+    const results: ArmorData[] = response.rows.map(armor => ({
       name: armor.name,
+      key: armor.key ?? '',
       category: armor.category,
       acDisplay: armor.ac_display,
       acBase: armor.ac_base,
@@ -1131,212 +1215,141 @@ export class Open5eClient {
       acCapDexMod: armor.ac_cap_dexmod,
       grantsStealthDisadvantage: armor.grants_stealth_disadvantage,
       strengthScoreRequired: armor.strength_score_required,
-      document: armor.document,
-      url: armor.url
+      source: sourceOf(armor),
+      url: armor.key ? `https://api.open5e.com/v2/armor/${armor.key}/` : ''
     }));
 
-    const matched = filterLocally && query
-      ? this.filterByName(transformedResults, query)
-      : transformedResults;
-    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
-
-    return {
-      count: filterLocally ? matched.length : response.count,
-      results: limited,
-      hasMore: filterLocally ? limited.length < matched.length : !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getArmorDetails(armorName: string): Promise<ArmorData | null> {
-    // Search for the armor first
-    const searchResults = await this.searchArmor(armorName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      armor => armor.name.toLowerCase() === armorName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getArmorDetails(armorName: string, scope?: ContentScope): Promise<ArmorData | null> {
+    const { results } = await this.searchArmor(armorName, { scope });
+    return this.pickResult(results, armorName);
   }
 
-  // Feats functionality
+  /** The best-named result, preferring core SRD sources (see pickByName). */
+  private pickResult<T extends { name: string; source: SourceLabel }>(rows: T[], name: string): T | null {
+    return pickByName(rows, name, { nameOf: row => row.name, sourceKeyOf: row => row.source.key });
+  }
+
+  // Feats
   async searchFeats(query?: string, options: {
     hasPrerequisite?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: FeatData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.hasPrerequisite !== undefined) {
-      params.has_prerequisite = options.hasPrerequisite;
-    }
-    if (options.limit) params.limit = options.limit;
+    const response = await this.query('feats', {
+      name: query,
+      hasPrerequisite: options.hasPrerequisite,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/feats/', params);
-
-    const transformedResults: FeatData[] = response.results.map(feat => ({
+    const results: FeatData[] = response.rows.map(feat => ({
       name: feat.name,
-      description: feat.desc,
-      prerequisite: feat.prerequisite,
-      hasPrerequisite: feat.has_prerequisite,
+      key: feat.key ?? '',
+      description: feat.desc ?? '',
+      prerequisite: feat.prerequisite ?? '',
+      hasPrerequisite: Boolean(feat.has_prerequisite),
+      type: feat.type ?? '',
       benefits: feat.benefits || [],
-      document: feat.document,
-      url: feat.url
+      source: sourceOf(feat),
+      url: feat.key ? `https://api.open5e.com/v2/feats/${feat.key}/` : ''
     }));
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getFeatDetails(featName: string): Promise<FeatData | null> {
-    // Search for the feat first
-    const searchResults = await this.searchFeats(featName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      feat => feat.name.toLowerCase() === featName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getFeatDetails(featName: string, scope?: ContentScope): Promise<FeatData | null> {
+    const { results } = await this.searchFeats(featName, { limit: 50, scope });
+    return this.pickResult(results, featName);
   }
 
-  // Conditions functionality
+  // Conditions
   async searchConditions(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: ConditionData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    const filterLocally = this.applyNameQuery('/v2/conditions/', params, query);
-    if (filterLocally) {
-      params.limit = 100; // small collection: fetch it all, then match on name locally
-    } else if (options.limit) {
-      params.limit = options.limit;
-    }
+    // A ruleset selects conditions by their per-ruleset descriptions, not by
+    // document: the 2014 and 2024 wordings share one "core" row (see
+    // ENDPOINTS.conditions). Sources still filter by document.
+    const ruleset = options.scope?.ruleset;
+    const sourcesOnly = options.scope?.sources ? { sources: options.scope.sources } : undefined;
+    if (ruleset !== undefined) await this.scopeDocuments({ ruleset }); // validates the name
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/conditions/', params);
+    const response = await this.query('conditions', {
+      name: query,
+      ruleset,
+      documents: await this.scopeDocuments(sourcesOnly)
+    }, { limit: options.limit });
 
-    const transformedResults: ConditionData[] = response.results.map(condition => ({
-      name: condition.name,
-      description: condition.desc,
-      document: condition.document,
-      url: condition.url
-    }));
+    const results: ConditionData[] = response.rows.map(condition => {
+      const descriptions: Record<string, string> = {};
+      for (const entry of condition.descriptions ?? []) {
+        if (entry?.gamesystem && typeof entry.desc === 'string') descriptions[entry.gamesystem] = entry.desc;
+      }
+      const chosen = [ruleset, '5e-2014', '5e-2024', ...Object.keys(descriptions)]
+        .find(system => system !== undefined && system in descriptions) ?? null;
 
-    const matched = filterLocally && query
-      ? this.filterByName(transformedResults, query)
-      : transformedResults;
-    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
+      return {
+        name: condition.name,
+        key: condition.key ?? '',
+        description: chosen ? descriptions[chosen] : '',
+        ruleset: chosen,
+        descriptions,
+        source: sourceOf(condition),
+        url: condition.key ? `https://api.open5e.com/v2/conditions/${condition.key}/` : ''
+      };
+    });
 
-    return {
-      count: filterLocally ? matched.length : response.count,
-      results: limited,
-      hasMore: filterLocally ? limited.length < matched.length : !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getConditionDetails(conditionName: string): Promise<ConditionData | null> {
-    // Search for the condition first
-    const searchResults = await this.searchConditions(conditionName, { limit: 20 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      condition => condition.name.toLowerCase() === conditionName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getConditionDetails(conditionName: string, scope?: ContentScope): Promise<ConditionData | null> {
+    const { results } = await this.searchConditions(conditionName, { scope });
+    return this.pickResult(results, conditionName);
   }
 
-  async getAllConditions(): Promise<ConditionData[]> {
-    // Get all conditions for quick reference
-    const response = await this.searchConditions('', { limit: 50 });
-    return response.results;
+  async getAllConditions(scope?: ContentScope): Promise<ConditionData[]> {
+    return (await this.searchConditions('', { scope })).results;
   }
 
-  // Backgrounds functionality
+  // Backgrounds
   async searchBackgrounds(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: BackgroundData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.limit) params.limit = options.limit;
+    const response = await this.query('backgrounds', {
+      name: query,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/backgrounds/', params);
-
-    const transformedResults: BackgroundData[] = response.results.map(background => {
-      // Extract specific benefit types
+    const results: BackgroundData[] = response.rows.map(background => {
       const benefits = background.benefits || [];
-      
-      const getBenefit = (type: string): string => {
-        const benefit = benefits.find((b: any) => b.type === type);
-        return benefit ? benefit.desc : '';
-      };
-
-      const getFeature = (): string => {
-        const feature = benefits.find((b: any) => b.type === 'feature');
-        return feature ? feature.desc : '';
-      };
+      const getBenefit = (...types: string[]): string =>
+        benefits.find((b: any) => types.includes(b.type))?.desc ?? '';
 
       return {
         name: background.name,
         description: background.desc || 'No description available',
         key: background.key,
-        benefits: benefits,
-        abilityScoreIncrease: getBenefit('ability_score') || getBenefit('ability_score_increases') || '',
-        skillProficiencies: getBenefit('skill_proficiency') || getBenefit('skill_proficiencies') || '',
-        toolProficiencies: getBenefit('tool_proficiency') || getBenefit('tool_proficiencies') || '',
-        languages: getBenefit('language') || getBenefit('languages') || '',
-        equipment: getBenefit('equipment') || getBenefit('suggested_equipment') || '',
-        feature: getFeature(),
-        document: background.document,
-        url: background.url
+        benefits,
+        abilityScoreIncrease: getBenefit('ability_score', 'ability_score_increases'),
+        skillProficiencies: getBenefit('skill_proficiency', 'skill_proficiencies'),
+        toolProficiencies: getBenefit('tool_proficiency', 'tool_proficiencies'),
+        languages: getBenefit('language', 'languages'),
+        equipment: getBenefit('equipment', 'suggested_equipment'),
+        feature: getBenefit('feature'),
+        source: sourceOf(background),
+        url: background.key ? `https://api.open5e.com/v2/backgrounds/${background.key}/` : ''
       };
     });
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getBackgroundDetails(backgroundName: string): Promise<BackgroundData | null> {
-    // First try to get all backgrounds and find exact match
-    const allResults = await this.searchBackgrounds('', { limit: 100 });
-    
-    // Find exact match first
-    const exactMatch = allResults.results.find(
-      background => background.name.toLowerCase() === backgroundName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match
-    const partialMatch = allResults.results.find(
-      background => background.name.toLowerCase().includes(backgroundName.toLowerCase())
-    );
-    
-    return partialMatch || null;
+  async getBackgroundDetails(backgroundName: string, scope?: ContentScope): Promise<BackgroundData | null> {
+    const { results } = await this.searchBackgrounds(backgroundName, { limit: 50, scope });
+    return this.pickResult(results, backgroundName);
   }
 
   // Rules Sections functionality
