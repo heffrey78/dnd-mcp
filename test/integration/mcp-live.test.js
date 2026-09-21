@@ -117,6 +117,16 @@ describe('MCP tools against the live API', () => {
     assert.ok(body.sections.every(s => `${s.name} ${s.description}`.toLowerCase().includes('grappled')));
   });
 
+  test('a darakhul heritage resolves size and speed from the species it names', async () => {
+    const race = toolJson(await server.callTool('get_race_details', { race_name: 'halfling heritage' }));
+
+    assert.equal(race.key, 'toh_halfling-heritage');
+    assert.deepEqual(race.resolved.sizeCategories, ['Small']);
+    assert.equal(race.resolved.walkingSpeed, 25);
+    assert.deepEqual(race.resolved.abilityScoreIncreases.fixed, { constitution: 1, dexterity: 2 });
+    assert.ok(race.resolved.inheritedTraits.some(t => t.name === 'Hunger for Flesh'));
+  });
+
   test('search_armor filters locally and does not return the full catalogue', async () => {
     const body = toolJson(await server.callTool('search_armor', { query: 'plate' }));
 

@@ -160,17 +160,20 @@ describe('field mapping', () => {
     assert.match(race.url, /\/v2\/species\/high-elf\//);
   });
 
-  test('a subspecies without size or speed traits is not given invented defaults', async () => {
-    mock = installMockFetch(() => page([{
-      name: 'Stoor Halfling', key: 'open5e_stoor-halfling',
-      is_subspecies: true, subspecies_of: 'srd_halfling',
-      traits: [{ name: 'Stoor Hardiness', desc: 'You gain resistance to poison damage.' }]
-    }]));
+  test('a subspecies whose size cannot be found is null with a reason, not invented', async () => {
+    mock = installMockFetch(url => url.pathname === '/v2/species/'
+      ? page([{
+        name: 'Stoor Halfling', key: 'open5e_stoor-halfling',
+        is_subspecies: true, subspecies_of: 'srd_halfling',
+        traits: [{ name: 'Stoor Hardiness', desc: 'You gain resistance to poison damage.' }]
+      }])
+      : { __status: 404 });
     const client = new Open5eClient();
 
     const race = (await client.searchRaces('stoor')).results[0];
-    assert.equal(race.size, '');
-    assert.equal(race.speed, '');
+    assert.equal(race.size, null);
+    assert.equal(race.speed, null);
+    assert.ok(race.resolved.unresolved.some(reason => /srd_halfling could not be loaded/.test(reason)));
   });
 
   test('a v2 spell maps onto the documented MCP shape', async () => {
@@ -364,7 +367,7 @@ describe('species lookup', () => {
     const client = new Open5eClient();
 
     await client.searchRaces('stoor');
-    assert.equal(mock.calls.length, 1);
+    assert.equal(callsTo(mock, '/v2/species/').length, 1);
   });
 
   test('many parent keys go out whole in a single subspecies request', async () => {

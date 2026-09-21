@@ -11,7 +11,13 @@ import {
   ABILITIES, type CasterType, type Ruleset, classRulesFor, keyAbilityList, spellSlots
 } from './class-rules.js';
 
+import {
+  type AbilityIncreases, combineIncreases, isDeferredTrait, originSpeciesNames,
+  parseAbilityScoreIncreases, parseSizeCategories, parseWalkingSpeed
+} from './species.js';
+
 export type { ContentScope, SourceLabel } from './sources.js';
+export type { AbilityIncreases } from './species.js';
 
 // Enhanced interfaces based on Open5e API structure
 export interface EnhancedSpellData {
@@ -100,15 +106,17 @@ export interface EnhancedClassData {
 
 export interface EnhancedRaceData {
   name: string;
-  size: string;
-  speed: string;
+  key: string;
+  /** Size text, inherited where the species does not give its own; null if unknown. */
+  size: string | null;
+  /** Speed text, inherited likewise; null if unknown. */
+  speed: string | null;
+  /** This species' own "Ability Score Increase" text, without its parent's. */
   abilityScoreIncrease: string;
   traits: string[];
   description: string;
   url: string;
-  
-  // Enhanced fields
-  key: string;
+
   isSubrace: boolean;
   subraceOf?: string;
   detailedTraits: Array<{
@@ -116,6 +124,22 @@ export interface EnhancedRaceData {
     desc: string;
   }>;
   source: SourceLabel;
+  /** What the species amounts to once its parent and origin are applied. */
+  resolved: ResolvedSpecies;
+}
+
+export interface ResolvedSpecies {
+  sizeCategories: string[];
+  walkingSpeed: number | null;
+  /** Parent's and subspecies' increases together. */
+  abilityScoreIncreases: AbilityIncreases;
+  /** Key of the species each value came from. */
+  from: { size: string | null; speed: string | null; abilityScores: string[] };
+  /** Traits granted by the parent species that the subspecies does not restate. */
+  inheritedTraits: Array<{ name: string; desc: string; from: string }>;
+  /** What could not be determined, and why. Empty when fully resolved. */
+  unresolved: string[];
+  notes: string[];
 }
 
 export interface MonsterAction {
@@ -871,6 +895,15 @@ export class Open5eClient {
     limit?: number;
     scope?: ContentScope;
   } = {}): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
+    const found = await this.findSpecies(query, options);
+    return { ...found, results: await Promise.all(found.results.map(race => this.resolveSpecies(race))) };
+  }
+
+  /** Species matching a name, plus the subspecies of matched parents; not yet resolved. */
+  private async findSpecies(query: string | undefined, options: {
+    limit?: number;
+    scope?: ContentScope;
+  }): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
     const documents = await this.scopeDocuments(options.scope);
     const response = await this.query('species', { name: query, documents }, {
       limit: options.limit ?? 10 // kept small by default to avoid timeouts
@@ -902,28 +935,34 @@ export class Open5eClient {
     return response.rows;
   }
 
+  /** The row as Open5e gives it; resolveSpecies fills in what it inherits. */
   private transformRace(race: any): EnhancedRaceData {
     const traits = race.traits || [];
+    const size = this.findSpeciesTrait(traits, 'size');
+    const speed = this.findSpeciesTrait(traits, 'speed');
 
     return {
-      // Current MCP format fields
       name: race.name,
-      // Subspecies usually omit size and speed because they inherit them from
-      // the parent species. Leave them blank rather than guess; getRaceDetails
-      // fills them in from the parent.
-      size: this.findSpeciesTrait(traits, 'size'),
-      speed: this.findSpeciesTrait(traits, 'speed'),
+      key: race.key ?? '',
+      size: size || null,
+      speed: speed || null,
       abilityScoreIncrease: this.findSpeciesTrait(traits, 'ability score increase'),
       traits: traits.map((trait: any) => trait.name),
       description: race.desc || '',
       url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
-
-      // Enhanced fields
-      key: race.key ?? '',
       isSubrace: race.is_subspecies || false,
-      subraceOf: race.subspecies_of,
+      subraceOf: race.subspecies_of || undefined,
       detailedTraits: traits,
-      source: sourceOf(race)
+      source: sourceOf(race),
+      resolved: {
+        sizeCategories: parseSizeCategories(size),
+        walkingSpeed: parseWalkingSpeed(speed),
+        abilityScoreIncreases: { fixed: {}, choices: [] },
+        from: { size: null, speed: null, abilityScores: [] },
+        inheritedTraits: [],
+        unresolved: [],
+        notes: []
+      }
     };
   }
 
@@ -939,18 +978,122 @@ export class Open5eClient {
     return trait?.desc ?? '';
   }
 
+  /**
+   * Fills in what a species inherits. A subspecies takes size, speed and
+   * traits from its parent and adds its ability increases to the parent's.
+   * Where the parent defers ("determined by your Heritage Subrace"), size and
+   * speed come from the species a heritage or chassis names ("Halfling
+   * Heritage" -> Halfling). Whatever cannot be found is listed in
+   * `resolved.unresolved` and left null, never guessed.
+   */
+  private async resolveSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData> {
+    const parent = race.isSubrace && race.subraceOf ? await this.loadSpecies(race.subraceOf) : null;
+    const notes: string[] = [];
+    const unresolved: string[] = [];
+
+    if (race.isSubrace && race.subraceOf && !parent) {
+      unresolved.push(`parent species ${race.subraceOf} could not be loaded`);
+    }
+
+    // Size and speed: own value, else the parent's, else the origin species'.
+    const deferred = (text: string | null) => !text || isDeferredTrait(text);
+    let origin: EnhancedRaceData | null | undefined;
+    const originSpecies = async () => {
+      if (origin === undefined) origin = await this.findOriginSpecies(race);
+      return origin;
+    };
+
+    const pick = async (field: 'size' | 'speed') => {
+      for (const candidate of [race, parent]) {
+        if (candidate && !deferred(candidate[field])) return { text: candidate[field], from: candidate.key };
+      }
+      const fromOrigin = await originSpecies();
+      if (fromOrigin && !deferred(fromOrigin[field])) return { text: fromOrigin[field], from: fromOrigin.key };
+      return null;
+    };
+    const size = await pick('size');
+    const speed = await pick('speed');
+
+    const deferredTo = [race, parent].map(r => r?.size).find(text => text && isDeferredTrait(text));
+    if (!size) unresolved.push(deferredTo ? `size: ${deferredTo}` : 'size is not given');
+    if (!speed) unresolved.push('walking speed is not given');
+
+    // Ability increases add up down the chain; a parent's and a subspecies' both apply.
+    const chain = [parent, race].filter((r): r is EnhancedRaceData => r !== null);
+    const parsed = chain.map(r => ({ key: r.key, ...parseAbilityScoreIncreases(r.abilityScoreIncrease) }));
+    const increases = combineIncreases(...parsed);
+    const warnings = parsed.flatMap(p => p.warnings.map(w => `${p.key}: ${w}`));
+    if (race.source.ruleset === '5e-2024' && chain.every(r => !r.abilityScoreIncrease)) {
+      notes.push('In the 2024 rules, ability score increases come from the background, not the species.');
+    }
+
+    // Traits the parent grants that the subspecies does not restate.
+    const own = new Set(race.traits.map(name => name.toLowerCase()));
+    const handled = new Set(['size', 'speed', 'ability score increase']);
+    const inheritedTraits = (parent?.detailedTraits ?? [])
+      .filter(t => !own.has(t.name.toLowerCase()) && !handled.has(t.name.toLowerCase()))
+      .map(t => ({ name: t.name, desc: t.desc, from: parent!.key }));
+
+    return {
+      ...race,
+      size: size?.text ?? null,
+      speed: speed?.text ?? null,
+      resolved: {
+        sizeCategories: parseSizeCategories(size?.text),
+        walkingSpeed: parseWalkingSpeed(speed?.text),
+        abilityScoreIncreases: increases,
+        from: {
+          size: size?.from ?? null,
+          speed: speed?.from ?? null,
+          abilityScores: parsed
+            .filter(p => Object.keys(p.fixed).length > 0 || p.choices.length > 0)
+            .map(p => p.key)
+        },
+        inheritedTraits,
+        unresolved: [...unresolved, ...warnings],
+        notes
+      }
+    };
+  }
+
+  /** A species row by key, unresolved, or null if it cannot be fetched. */
+  private async loadSpecies(key: string): Promise<EnhancedRaceData | null> {
+    try {
+      const row = await this.makeRequest<any>(`/v2/species/${key}/`);
+      await this.embedDocuments([row]);
+      return this.transformRace(row);
+    } catch (error) {
+      console.error(`Could not load species ${key}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * The species a heritage or chassis subspecies was before, searched within
+   * its own ruleset: "Elf/Shadow Fey Heritage" tries Elf, then Shadow Fey.
+   */
+  private async findOriginSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData | null> {
+    const scope = race.source.ruleset ? { ruleset: race.source.ruleset } : undefined;
+    for (const name of originSpeciesNames(race.name)) {
+      const { results } = await this.findSpecies(name, { limit: 50, scope });
+      const best = pickByName(results.filter(r => !r.isSubrace && r.key !== race.subraceOf), name, {
+        nameOf: r => r.name,
+        sourceKeyOf: r => r.source.key
+      });
+      if (best && best.name.toLowerCase() === name.toLowerCase()) return best;
+    }
+    return null;
+  }
+
   async getRaceDetails(raceName: string, scope?: ContentScope): Promise<EnhancedRaceData | null> {
     const needle = raceName.trim().toLowerCase();
     if (!needle) return null;
 
     // Species keys ("srd_halfling") are not names, so fetch those directly.
     if (Open5eClient.looksLikeKey(needle)) {
-      try {
-        const race = await this.makeRequest<any>(`/v2/species/${needle}/`);
-        return this.inheritFromParentSpecies(this.transformRace(race));
-      } catch {
-        // Not a key after all; fall back to a name search.
-      }
+      const race = await this.loadSpecies(needle);
+      if (race) return this.resolveSpecies(race);
+      // Not a key after all; fall back to a name search.
     }
 
     // Open5e holds several species with the same name ("Halfling" in both
@@ -958,37 +1101,18 @@ export class Open5eClient {
     // names contain it ("Stoor Halfling", "Halfling Heritage"). Fetch enough
     // rows that the exact match cannot be crowded out, then prefer a
     // non-subspecies from the core SRD.
-    const { results } = await this.searchRaces(raceName.trim(), { limit: 50, scope });
+    const { results } = await this.findSpecies(raceName.trim(), { limit: 50, scope });
     const best = pickByName(results, needle, {
       nameOf: race => race.name,
       sourceKeyOf: race => race.source.key,
       extraRank: race => [race.isSubrace ? 1 : 0]
     });
-    return best ? this.inheritFromParentSpecies(best) : null;
+    return best ? this.resolveSpecies(best) : null;
   }
 
   /** Open5e keys are `<document>_<slug>`: "srd_halfling", "srd-2024_elf". */
   private static looksLikeKey(value: string): boolean {
     return /^[a-z0-9-]+_[a-z0-9-]+$/.test(value);
-  }
-
-  /** Fills in size and speed a subspecies inherits from its parent species. */
-  private async inheritFromParentSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData> {
-    if (!race.isSubrace || !race.subraceOf || (race.size && race.speed)) return race;
-
-    try {
-      const parent = this.transformRace(
-        await this.makeRequest<any>(`/v2/species/${race.subraceOf}/`)
-      );
-      return {
-        ...race,
-        size: race.size || parent.size,
-        speed: race.speed || parent.speed
-      };
-    } catch (error) {
-      console.error(`Could not load parent species ${race.subraceOf}:`, error);
-      return race;
-    }
   }
 
   // Classes
