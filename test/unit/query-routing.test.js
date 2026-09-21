@@ -26,7 +26,7 @@ describe('name queries are routed per endpoint', () => {
   const serverFiltered = [
     ['searchSpells', '/v2/spells/', [{ name: 'Fireball', level: 3 }]],
     ['searchMonsters', '/v2/creatures/', [{ name: 'Goblin' }]],
-    ['searchMagicItems', '/v1/magicitems/', [{ name: 'Bag of Beans' }]],
+    ['searchMagicItems', '/v2/magicitems/', [{ name: 'Bag of Beans' }]],
     ['searchFeats', '/v2/feats/', [{ name: 'Alert' }]],
     ['searchBackgrounds', '/v2/backgrounds/', [{ name: 'Soldier' }]],
     ['searchRaces', '/v2/species/', [{ name: 'Elf', key: 'elf', traits: [] }]]

@@ -107,6 +107,7 @@ const SCOPED_TOOLS = new Set([
   'search_monsters', 'get_monsters_by_cr', 'get_monsters_by_cr_range',
   'build_encounter', 'calculate_encounter_difficulty',
   'search_weapons', 'search_armor', 'get_armor_details',
+  'search_magic_items', 'get_magic_item_details',
   'search_feats', 'get_feat_details',
   'search_conditions', 'get_condition_details', 'get_all_conditions',
   'search_backgrounds', 'get_background_details'
@@ -463,12 +464,12 @@ const tools: Tool[] = [
         },
         rarity: {
           type: 'string',
-          description: 'Filter by rarity (common, uncommon, rare, very rare, legendary)',
-          enum: ['common', 'uncommon', 'rare', 'very rare', 'legendary'],
+          description: 'Filter by rarity',
+          enum: ['common', 'uncommon', 'rare', 'very rare', 'legendary', 'artifact'],
         },
         type: {
           type: 'string',
-          description: 'Filter by item type (e.g., weapon, armor, wondrous item)',
+          description: 'Filter by item category (e.g., weapon, armor, wondrous item, potion, ring)',
         },
         requires_attunement: {
           type: 'boolean',
@@ -1323,101 +1324,56 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // NEW: Magic Items tools
       case 'search_magic_items': {
-        try {
-          const { query, rarity, type, requires_attunement, limit } = args || {};
-          
-          // Input validation
-          if (query && typeof query !== 'string') {
-            throw new Error('Query must be a string');
-          }
-          if (limit !== undefined && limit !== null && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50)) {
-            throw new Error('Limit must be an integer between 1 and 50');
-          }
-          if (rarity && typeof rarity === 'string' && !['common', 'uncommon', 'rare', 'very rare', 'legendary'].includes(rarity)) {
-            throw new Error('Invalid rarity. Must be: common, uncommon, rare, very rare, or legendary');
-          }
+        const { query, rarity, type, requires_attunement } = args || {};
 
-          const options: any = {};
-          
-          if (rarity) options.rarity = rarity;
-          if (type) options.type = type;
-          if (requires_attunement !== undefined) options.requiresAttunement = requires_attunement;
-          if (limit) options.limit = limit;
+        const results = await open5eClient.searchMagicItems(optionalString(query, 'query'), {
+          // Rarity keys are hyphenated ("very-rare"); the schema offers "very rare".
+          rarity: optionalString(rarity, 'rarity')?.replace(/\s+/g, '-'),
+          // Category keys are too ("wondrous-item"); names are also accepted.
+          type: optionalString(type, 'type'),
+          requiresAttunement: requires_attunement === undefined ? undefined : Boolean(requires_attunement),
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 50),
+          scope
+        });
 
-          const results = await open5eClient.searchMagicItems(query as string, options);
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  found: results.count,
-                  showing: results.results.length,
-                  hasMore: results.hasMore,
-                  magicItems: results.results
-                }, null, 2),
-              },
-            ],
-          };
-        } catch (error) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Error searching magic items: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              },
-            ],
-            isError: true,
-          };
-        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                found: results.count,
+                showing: results.results.length,
+                hasMore: results.hasMore,
+                magicItems: results.results
+              }, null, 2),
+            },
+          ],
+        };
       }
 
       case 'get_magic_item_details': {
-        try {
-          const itemName = args?.item_name as string;
-          
-          // Input validation
-          if (!itemName || typeof itemName !== 'string') {
-            throw new Error('item_name is required and must be a string');
-          }
-          if (itemName.trim().length === 0) {
-            throw new Error('item_name cannot be empty');
-          }
-          if (itemName.length > 100) {
-            throw new Error('item_name is too long (maximum 100 characters)');
-          }
+        const itemName = validateStringInput(args?.item_name, 'item_name');
 
-          const item = await open5eClient.getMagicItemDetails(itemName.trim());
-          if (!item) {
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Magic item "${itemName}" not found. Try searching with partial names using search_magic_items.`,
-                },
-              ],
-            };
-          }
-
+        const item = await open5eClient.getMagicItemDetails(itemName, scope);
+        if (!item) {
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(item, null, 2),
+                text: `Magic item "${itemName}" not found. Try searching with partial names using search_magic_items.`,
               },
             ],
-          };
-        } catch (error) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Error getting magic item details: ${error instanceof Error ? error.message : 'Unknown error'}`,
-              },
-            ],
-            isError: true,
           };
         }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(item, null, 2),
+            },
+          ],
+        };
       }
 
       // NEW: Armor tools

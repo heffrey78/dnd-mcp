@@ -56,3 +56,35 @@ export function installMockFetch(responder) {
 export function page(results, { count = results.length, next = null } = {}) {
   return { count, next, previous: null, results };
 }
+
+/**
+ * Minimal copies of the Open5e lookup collections that enum-like filters are
+ * validated against (see FilterRule.values in src/open5e-endpoints.ts).
+ */
+export const LOOKUPS = {
+  '/v2/spellschools/': [
+    { key: 'evocation', name: 'Evocation' }, { key: 'necromancy', name: 'Necromancy' }
+  ],
+  '/v2/creaturetypes/': [
+    { key: 'dragon', name: 'Dragon' }, { key: 'humanoid', name: 'Humanoid' }, { key: 'undead', name: 'Undead' }
+  ],
+  '/v2/environments/': [
+    { key: 'forest', name: 'Forest or Jungle' }, { key: 'caves', name: 'Caves' }, { key: 'mountain', name: 'Mountain' }
+  ],
+  '/v2/itemrarities/': [
+    { key: 'rare', name: 'Rare' }, { key: 'very-rare', name: 'Very Rare' }
+  ],
+  '/v2/itemcategories/': [
+    { key: 'wondrous-item', name: 'Wondrous Item' }, { key: 'potion', name: 'Potion' }
+  ]
+};
+
+/** Wraps a responder so lookup collections are answered from LOOKUPS. */
+export function withLookups(responder) {
+  return url => (url.pathname in LOOKUPS ? page(LOOKUPS[url.pathname]) : responder(url));
+}
+
+/** The requests made to one path, ignoring lookup and document fetches. */
+export function callsTo(mock, pathname) {
+  return mock.calls.filter(url => url.pathname === pathname);
+}

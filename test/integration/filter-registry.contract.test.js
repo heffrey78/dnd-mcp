@@ -142,6 +142,28 @@ describe('filter registry contract', () => {
     }
   }
 
+  const lookups = Object.entries(ENDPOINTS).flatMap(([endpoint, spec]) =>
+    Object.entries(spec.filters)
+      .filter(([, rule]) => typeof rule.values === 'string')
+      .map(([filter, rule]) => ({ endpoint, filter, lookup: rule.values })));
+
+  for (const { endpoint, filter, lookup } of lookups) {
+    test(`${endpoint}.${filter} values are listed by ${lookup}`, async () => {
+      const url = new URL(lookup, BASE);
+      url.searchParams.set('limit', '1000');
+      url.searchParams.set('fields', 'key,name');
+      const body = await (await fetch(url, { headers: { Accept: 'application/json' } })).json();
+      const keys = body.results.map(row => row.key);
+
+      assert.ok(keys.length > 0, `${lookup} lists nothing`);
+      assert.equal(body.next, null, `${lookup} no longer fits in one page`);
+      const probe = PROBES[`${endpoint}.${filter}`];
+      if (probe) {
+        assert.ok(keys.includes(probe.valid), `${probe.valid} is not in ${lookup}`);
+      }
+    });
+  }
+
   for (const [endpoint, params] of IGNORED_UPSTREAM) {
     const label = Object.entries(params).map(([k, v]) => `${k}=${v}`).join('&');
 

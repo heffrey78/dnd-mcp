@@ -195,15 +195,15 @@ export interface WeaponData {
 
 export interface MagicItemData {
   name: string;
+  key: string;
+  /** Item category, e.g. "Wondrous Item". */
   type: string;
   description: string;
   rarity: string;
-  requiresAttunement: string;
-  document: {
-    slug: string;
-    title: string;
-    url: string;
-  };
+  requiresAttunement: boolean;
+  /** Who can attune, where restricted: "by a cleric". */
+  attunementDetail?: string;
+  source: SourceLabel;
   url: string;
 }
 
@@ -398,10 +398,12 @@ export class Open5eClient {
     const params: Record<string, any> = {};
     const locals: Array<[(row: any, value: any) => boolean, FilterValue]> = [];
 
-    for (const [filter, value] of Object.entries(filters) as Array<[string, FilterValue | undefined]>) {
-      if (value === undefined) continue;
+    for (const [filter, raw] of Object.entries(filters) as Array<[string, FilterValue | undefined]>) {
+      if (raw === undefined) continue;
       const rule = spec.filters[filter];
       if (!rule) throw new Error(`${spec.path} has no "${filter}" filter`);
+      const value = rule.values ? await this.toLookupKeys(filter, rule.values, raw) : raw;
+      if (value === undefined) continue;
       if ('server' in rule) {
         params[rule.server] = value;
       } else if (!(typeof value === 'string' && value.trim() === '')) {
@@ -450,6 +452,31 @@ export class Open5eClient {
 
     await this.embedDocuments(result.rows);
     return result;
+  }
+
+  /**
+   * Maps a filter value onto the keys of its lookup endpoint (see
+   * FilterRule.values), accepting a key or a name in any case. A blank value
+   * is "no filter"; anything unrecognised is an error listing the valid keys.
+   */
+  private async toLookupKeys(filter: string, lookupPath: string, value: FilterValue): Promise<FilterValue | undefined> {
+    const lookup = await this.makeRequest<Open5eResponse<any>>(lookupPath, {
+      limit: PAGE_MAX, fields: ['key', 'name']
+    });
+    const toKey = (item: unknown): string => {
+      const wanted = String(item).trim().toLowerCase();
+      const hit = lookup.results.find(row =>
+        String(row.key).toLowerCase() === wanted || String(row.name ?? '').toLowerCase() === wanted);
+      if (!hit) {
+        const valid = lookup.results.map(row => row.key).sort().join(', ');
+        throw new Error(`Unknown ${filter} "${String(item).trim()}". Valid values: ${valid}`);
+      }
+      return hit.key;
+    };
+
+    if (Array.isArray(value)) return value.length > 0 ? value.map(toKey) : undefined;
+    if (typeof value === 'string' && value.trim() === '') return undefined;
+    return toKey(value);
   }
 
   /** Full rows fetched after a sparse scan when the caller gives no limit. */
@@ -772,8 +799,7 @@ export class Open5eClient {
       name: query,
       level: options.level,
       maxLevel: options.maxLevel,
-      // School keys are lower case ("evocation"); accept "Evocation" too.
-      school: options.school?.trim().toLowerCase(),
+      school: options.school,
       classKey: options.classKey,
       documents: await this.scopeDocuments(options.scope)
     }, { limit: options.limit, ordering: options.ordering });
@@ -1120,8 +1146,8 @@ export class Open5eClient {
       cr: options.cr,
       minCr: options.minCr,
       maxCr: options.maxCr,
-      type: options.type?.trim().toLowerCase(),
-      types: options.types && options.types.length > 0 ? options.types : undefined,
+      type: options.type,
+      types: options.types,
       environment: options.environment,
       documents: await this.scopeDocuments(options.scope)
     }, { limit: options.limit, ordering: options.ordering });
@@ -1293,81 +1319,42 @@ export class Open5eClient {
     };
   }
 
-  // Magic Items functionality
+  // Magic items
   async searchMagicItems(query?: string, options: {
+    /** A rarity key or name: "very-rare", "Very Rare". */
     rarity?: string;
+    /** An item category key or name: "wondrous-item", "Wondrous Item". */
     type?: string;
     requiresAttunement?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: MagicItemData[]; hasMore: boolean }> {
-    // Validate inputs
-    if (query && typeof query !== 'string') {
-      throw new Error('Search query must be a string');
-    }
-    if (options.limit && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 50)) {
-      throw new Error('Limit must be an integer between 1 and 50');
-    }
+    const response = await this.query('magicitems', {
+      name: query,
+      rarity: options.rarity,
+      category: options.type,
+      requiresAttunement: options.requiresAttunement,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.rarity) params.rarity = options.rarity;
-    if (options.type) params.type = options.type;
-    if (options.requiresAttunement !== undefined) {
-      params.requires_attunement = options.requiresAttunement ? 'true' : 'false';
-    }
-    if (options.limit) params.limit = options.limit;
+    const results: MagicItemData[] = response.rows.map(item => ({
+      name: item.name,
+      key: item.key ?? '',
+      type: item.category?.name ?? '',
+      description: item.desc ?? '',
+      rarity: item.rarity?.name ?? '',
+      requiresAttunement: Boolean(item.requires_attunement),
+      attunementDetail: item.attunement_detail || undefined,
+      source: sourceOf(item),
+      url: item.key ? `https://api.open5e.com/v2/magicitems/${item.key}/` : ''
+    }));
 
-    try {
-      const response = await this.makeRequest<Open5eResponse<any>>('/v1/magicitems/', params);
-
-      const transformedResults: MagicItemData[] = response.results
-        .filter(item => this.validateMagicItem(item))
-        .map(item => ({
-          name: item.name || 'Unknown Item',
-          type: item.type || 'Unknown Type',
-          description: item.desc || 'No description available',
-          rarity: item.rarity || 'unknown',
-          requiresAttunement: item.requires_attunement || 'No',
-          document: {
-            slug: item.document__slug || '',
-            title: item.document__title || 'Unknown Source',
-            url: item.document__url || ''
-          },
-          url: item.slug ? `https://api.open5e.com/v1/magicitems/${item.slug}/` : ''
-        }));
-
-      return {
-        count: response.count || 0,
-        results: transformedResults,
-        hasMore: !!response.next
-      };
-    } catch (error) {
-      throw new Error(`Failed to search magic items: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  private validateMagicItem(item: any): boolean {
-    return item && typeof item === 'object' && 
-           (item.name || item.slug) && 
-           typeof item.name === 'string';
-  }
-
-  async getMagicItemDetails(itemName: string): Promise<MagicItemData | null> {
-    // Search for the magic item first
-    const searchResults = await this.searchMagicItems(itemName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      item => item.name.toLowerCase() === itemName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getMagicItemDetails(itemName: string, scope?: ContentScope): Promise<MagicItemData | null> {
+    const { results } = await this.searchMagicItems(itemName, { limit: 50, scope });
+    return this.pickResult(results, itemName);
   }
 
   // Armor
@@ -1703,7 +1690,7 @@ export class Open5eClient {
       minCr: options.minCr,
       maxCr: options.maxCr,
       environment: options.environment,
-      types: options.types && options.types.length > 0 ? options.types : undefined,
+      types: options.types,
       documents: await this.scopeDocuments(options.scope)
     }, { all: true, fields: ['key'] });
 

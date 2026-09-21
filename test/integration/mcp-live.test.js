@@ -93,6 +93,22 @@ describe('MCP tools against the live API', () => {
     assert.match(response.result.content[0].text, /Unknown challenge rating/);
   });
 
+  test('search_magic_items filters by v2 rarity and category keys', async () => {
+    const body = toolJson(await server.callTool('search_magic_items', {
+      rarity: 'very rare', type: 'wondrous item', limit: 10
+    }));
+
+    assert.ok(body.magicItems.length > 0);
+    assert.ok(body.magicItems.every(i => i.rarity === 'Very Rare' && i.type === 'Wondrous Item'),
+      body.magicItems.map(i => `${i.name}: ${i.rarity} ${i.type}`).join('; '));
+  });
+
+  test('an unknown item category is rejected with the valid ones', async () => {
+    const response = await server.callTool('search_magic_items', { type: 'wonderous item' });
+    assert.equal(response.result?.isError, true);
+    assert.match(response.result.content[0].text, /Unknown category "wonderous item"\. Valid values: .*wondrous-item/);
+  });
+
   test('search_armor filters locally and does not return the full catalogue', async () => {
     const body = toolJson(await server.callTool('search_armor', { query: 'plate' }));
 

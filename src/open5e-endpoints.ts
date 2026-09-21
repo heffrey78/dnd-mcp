@@ -10,15 +10,21 @@
  *              ignores.
  *
  * The client refuses any filter not listed, and
- * `test/integration/open5e-contract.test.js` checks every `server` entry
+ * `test/integration/filter-registry.contract.test.js` checks every entry
  * against the live API. Verified 2026-09-21; see docs/api-filters.md.
  */
 
 export type FilterValue = string | number | boolean | readonly string[];
 
+/**
+ * `values` names an Open5e lookup endpoint listing the filter's valid values.
+ * The client then accepts a key or a name ("Wondrous Item" for
+ * "wondrous-item"), sends the key, and rejects anything else with the list of
+ * valid values -- rather than passing a typo upstream to fail or match nothing.
+ */
 export type FilterRule =
-  | { server: string }
-  | { local: (row: any, value: any) => boolean };
+  | { server: string; values?: string }
+  | { local: (row: any, value: any) => boolean; values?: string };
 
 export interface EndpointSpec {
   path: string;
@@ -54,7 +60,7 @@ export const ENDPOINTS = {
       level: { server: 'level' },
       maxLevel: { server: 'level__lte' },
       // `school=` is ignored; only the key lookup filters.
-      school: { server: 'school__key' },
+      school: { server: 'school__key', values: '/v2/spellschools/' },
       classKey: { server: 'classes__key' }
     },
     ordering: ['name', '-name', 'level', '-level']
@@ -68,17 +74,17 @@ export const ENDPOINTS = {
       minCr: { server: 'challenge_rating__gte' },
       maxCr: { server: 'challenge_rating__lte' },
       // `type__key` is ignored; `type` takes the key and rejects unknown ones.
-      type: { server: 'type' },
+      type: { server: 'type', values: '/v2/creaturetypes/' },
       keys: { server: 'key__in' },
       // Any of several types; `type` takes only one.
       types: {
-        local: (row, values: readonly string[]) => values.some(value =>
-          lower(row.type?.key) === lower(value) || lower(row.type?.name).includes(lower(value)))
+        local: (row, values: readonly string[]) => values.some(value => lower(row.type?.key) === lower(value)),
+        values: '/v2/creaturetypes/'
       },
       // Neither `environments` nor `environments__key` filters.
       environment: {
-        local: (row, value: string) => (row.environments ?? []).some((env: any) =>
-          lower(env.key) === lower(value) || lower(env.name).includes(lower(value)))
+        local: (row, value: string) => (row.environments ?? []).some((env: any) => lower(env.key) === lower(value)),
+        values: '/v2/environments/'
       }
     },
     ordering: ['name', '-name', 'challenge_rating', '-challenge_rating'],
@@ -90,9 +96,9 @@ export const ENDPOINTS = {
       name,
       documents,
       // Keys such as "very-rare"; an unknown key is a 400.
-      rarity: { server: 'rarity' },
+      rarity: { server: 'rarity', values: '/v2/itemrarities/' },
       // `category__key` is ignored; `category` takes the key.
-      category: { server: 'category' },
+      category: { server: 'category', values: '/v2/itemcategories/' },
       requiresAttunement: { server: 'requires_attunement' }
     }
   },

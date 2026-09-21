@@ -3,7 +3,7 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Open5eClient } from '../../dist/open5e-client.js';
-import { installMockFetch, page } from '../helpers/mock-fetch.js';
+import { installMockFetch, page, withLookups, callsTo } from '../helpers/mock-fetch.js';
 
 let mock;
 afterEach(() => { mock?.restore(); mock = undefined; });
@@ -123,11 +123,11 @@ describe('parameter sanitisation', () => {
   });
 
   test('spell level and school filters are forwarded under their v2 names', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
+    mock = installMockFetch(withLookups(() => page([{ name: 'Fireball', level: 3 }])));
     const client = new Open5eClient();
 
     await client.searchSpells('fire', { level: 3, school: 'Evocation' });
-    const params = mock.paramsOf();
+    const params = Object.fromEntries(callsTo(mock, '/v2/spells/')[0].searchParams);
     assert.equal(params.level, '3');
     assert.equal(params.school__key, 'evocation', 'school keys are lower case');
     assert.equal(params.school, undefined, 'school= is ignored by /v2/spells/');

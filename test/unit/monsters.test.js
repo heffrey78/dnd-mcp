@@ -4,7 +4,7 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Open5eClient } from '../../dist/open5e-client.js';
-import { installMockFetch, page } from '../helpers/mock-fetch.js';
+import { installMockFetch, page, withLookups, callsTo } from '../helpers/mock-fetch.js';
 
 let mock;
 afterEach(() => { mock?.restore(); mock = undefined; });
@@ -70,10 +70,10 @@ describe('monster stat blocks', () => {
   });
 
   test('CR filters use the numeric v2 parameters', async () => {
-    mock = installMockFetch(() => page([]));
+    mock = installMockFetch(withLookups(() => page([])));
     await new Open5eClient().searchMonsters('', { cr: 0.125, type: 'Dragon' });
 
-    const params = mock.paramsOf();
+    const params = Object.fromEntries(callsTo(mock, '/v2/creatures/')[0].searchParams);
     assert.equal(params.challenge_rating, '0.125');
     assert.equal(params.type, 'dragon', 'type keys are lower case; type__key is ignored upstream');
     assert.equal(params.cr, undefined, 'cr= is ignored by /v2/creatures/');
@@ -91,13 +91,13 @@ describe('locally filtered monster queries', () => {
   }
 
   test('an environment filter scans a sparse fieldset, then fetches the matches in full', async () => {
-    mock = installMockFetch(responder);
+    mock = installMockFetch(withLookups(responder));
     const result = await new Open5eClient().searchMonsters('', { environment: 'forest' });
 
-    const scan = mock.calls[0];
+    const [scan, hydrate] = callsTo(mock, '/v2/creatures/');
     assert.ok(scan.searchParams.get('fields').split(',').includes('environments'));
     assert.equal(scan.searchParams.get('environments'), null, 'the environment filter is not sent upstream');
-    assert.equal(mock.calls[1].searchParams.get('key__in'), 'srd_goblin');
+    assert.equal(hydrate.searchParams.get('key__in'), 'srd_goblin');
 
     assert.deepEqual(result.results.map(m => m.name), ['Goblin']);
     assert.equal(result.results[0].hitPoints, 7, 'the hydrated row is the full stat block');
@@ -105,8 +105,8 @@ describe('locally filtered monster queries', () => {
   });
 
   test('several monster types are matched locally', async () => {
-    mock = installMockFetch(responder);
-    const result = await new Open5eClient().searchMonsters('', { types: ['dragon', 'undead'] });
+    mock = installMockFetch(withLookups(responder));
+    const result = await new Open5eClient().searchMonsters('', { types: ['Dragon', 'undead'] });
     assert.deepEqual(result.results.map(m => m.name), ['Adult Red Dragon']);
   });
 

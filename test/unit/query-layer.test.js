@@ -6,7 +6,7 @@ import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Open5eClient } from '../../dist/open5e-client.js';
 import { ENDPOINTS, PAGE_MAX } from '../../dist/open5e-endpoints.js';
-import { installMockFetch, page } from '../helpers/mock-fetch.js';
+import { installMockFetch, page, withLookups, callsTo } from '../helpers/mock-fetch.js';
 
 let mock;
 afterEach(() => { mock?.restore(); mock = undefined; });
@@ -43,11 +43,11 @@ describe('query', () => {
   });
 
   test('server filters are sent under their verified parameter names', async () => {
-    mock = installMockFetch(() => page([]));
+    mock = installMockFetch(withLookups(() => page([])));
     const client = new Open5eClient();
 
     await client.query('spells', { school: 'evocation', classKey: 'srd_bard', maxLevel: 3 });
-    const params = mock.paramsOf();
+    const params = Object.fromEntries(callsTo(mock, '/v2/spells/')[0].searchParams);
     assert.equal(params.school__key, 'evocation', 'school= alone is ignored upstream');
     assert.equal(params.classes__key, 'srd_bard');
     assert.equal(params.level__lte, '3');
@@ -79,8 +79,8 @@ describe('query', () => {
   });
 
   test('local filtering refuses to scan an unbounded collection', async () => {
-    mock = installMockFetch(() => page([{ name: 'Goblin', environments: [] }],
-      { count: 99999, next: 'https://api.open5e.com/v2/creatures/?page=next' }));
+    mock = installMockFetch(withLookups(() => page([{ name: 'Goblin', environments: [] }],
+      { count: 99999, next: 'https://api.open5e.com/v2/creatures/?page=next' })));
     const client = new Open5eClient();
 
     await assert.rejects(() => client.query('creatures', { environment: 'forest' }), /narrow the query/);
@@ -244,5 +244,54 @@ describe('v2 row shapes', () => {
     const feat = await client.getFeatDetails('grappler');
     assert.equal(feat.key, 'srd_grappler');
     assert.equal(feat.source.key, 'srd-2014');
+  });
+});
+
+describe('filters with a lookup of valid values', () => {
+  test('a name is accepted and sent as its key', async () => {
+    mock = installMockFetch(withLookups(() => page([])));
+    await new Open5eClient().searchMagicItems('', { rarity: 'Very Rare', type: 'wondrous item' });
+
+    const params = callsTo(mock, '/v2/magicitems/')[0].searchParams;
+    assert.equal(params.get('rarity'), 'very-rare');
+    assert.equal(params.get('category'), 'wondrous-item');
+  });
+
+  test('an unknown value is rejected with the valid ones, before the search is sent', async () => {
+    mock = installMockFetch(withLookups(() => page([])));
+
+    await assert.rejects(() => new Open5eClient().searchMonsters('', { type: 'dargon' }),
+      /Unknown type "dargon"\. Valid values: dragon, humanoid, undead/);
+    assert.equal(callsTo(mock, '/v2/creatures/').length, 0);
+  });
+
+  test('every value in a list is checked', async () => {
+    mock = installMockFetch(withLookups(() => page([])));
+    await assert.rejects(() => new Open5eClient().searchMonsters('', { types: ['dragon', 'dargon'] }),
+      /Unknown types "dargon"/);
+  });
+
+  test('a local filter value is validated too', async () => {
+    mock = installMockFetch(withLookups(() => page([])));
+    await assert.rejects(() => new Open5eClient().searchMonsters('', { environment: 'forrest' }),
+      /Unknown environment "forrest"/);
+  });
+});
+
+describe('magic items', () => {
+  test('a v2 magic item maps onto the item shape', async () => {
+    mock = installMockFetch(() => page([{
+      key: 'srd_bag-of-holding', name: 'Bag of Holding', desc: 'This bag has an interior space.',
+      category: { name: 'Wondrous Item', key: 'wondrous-item' },
+      rarity: { name: 'Uncommon', key: 'uncommon' },
+      requires_attunement: false, attunement_detail: null,
+      document: { key: 'srd-2014', display_name: '5e 2014 Rules', gamesystem: { key: '5e-2014' } }
+    }]));
+
+    const item = await new Open5eClient().getMagicItemDetails('bag of holding');
+    assert.deepEqual(
+      { type: item.type, rarity: item.rarity, requiresAttunement: item.requiresAttunement, source: item.source.key },
+      { type: 'Wondrous Item', rarity: 'Uncommon', requiresAttunement: false, source: 'srd-2014' });
+    assert.equal(item.url, 'https://api.open5e.com/v2/magicitems/srd_bag-of-holding/');
   });
 });
