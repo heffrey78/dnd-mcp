@@ -9,6 +9,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { Open5eClient, type ContentScope } from './open5e-client.js';
 import { UnifiedSearchEngine, ContentType } from './unified-search-engine.js';
+import { CharacterBuilder } from './character-build/builder.js';
+import type { CampaignType, ExperienceLevel, Playstyle } from './character-build/types.js';
+import type { Ability } from './class-rules.js';
 
 // Validation utilities
 function validateStringInput(value: any, fieldName: string, required: boolean = true, maxLength: number = 100): string {
@@ -107,6 +110,7 @@ const SCOPED_TOOLS = new Set([
   'search_races', 'get_race_details',
   'search_monsters', 'get_monsters_by_cr', 'get_monsters_by_cr_range',
   'build_encounter', 'calculate_encounter_difficulty',
+  'generate_character_build', 'compare_character_builds', 'get_build_recommendations',
   'search_weapons', 'search_armor', 'get_armor_details',
   'search_magic_items', 'get_magic_item_details',
   'search_feats', 'get_feat_details',
@@ -158,6 +162,7 @@ function validateStringArgLengths(value: unknown, path: string): void {
 
 const open5eClient = new Open5eClient();
 const unifiedSearchEngine = new UnifiedSearchEngine();
+const characterBuilder = new CharacterBuilder(open5eClient);
 
 const server = new Server(
   {
@@ -856,7 +861,7 @@ const tools: Tool[] = [
   // Player-focused character build helper tools
   {
     name: 'generate_character_build',
-    description: 'Generate an optimized character build combining race, class, background, and feats',
+    description: 'Generate a character build: species, class and subclass, background, ability scores, hit points, spells, feats and a level-by-level plan. Uses the 2014 SRD unless ruleset or sources say otherwise',
     inputSchema: {
       type: 'object',
       properties: {
@@ -895,7 +900,7 @@ const tools: Tool[] = [
         },
         allow_multiclass: {
           type: 'boolean',
-          description: 'Allow multiclass builds (default: false)',
+          description: 'Multiclass builds are not supported yet; true is rejected',
         },
         preferred_ability_scores: {
           type: 'array',
@@ -1781,31 +1786,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Player-focused character build helper tools
       case 'generate_character_build': {
-        const {
-          preferred_class,
-          preferred_race,
-          preferred_background,
-          playstyle,
-          campaign_type,
-          experience_level,
-          focus_level,
-          allow_multiclass,
-          preferred_ability_scores
-        } = args || {};
-
-        const options = {
-          preferredClass: preferred_class as string | undefined,
-          preferredRace: preferred_race as string | undefined,
-          preferredBackground: preferred_background as string | undefined,
-          playstyle: playstyle as 'damage' | 'support' | 'tank' | 'utility' | 'balanced' | undefined,
-          campaignType: campaign_type as 'combat' | 'roleplay' | 'exploration' | 'mixed' | undefined,
-          experienceLevel: experience_level as 'beginner' | 'intermediate' | 'advanced' | undefined,
-          focusLevel: focus_level as number | undefined,
-          allowMulticlass: allow_multiclass as boolean | undefined,
-          preferredAbilityScores: preferred_ability_scores as string[] | undefined
-        };
-
-        const build = await open5eClient.generateCharacterBuild(options);
+        const build = await characterBuilder.build({
+          preferredClass: optionalString(args?.preferred_class, 'preferred_class'),
+          preferredRace: optionalString(args?.preferred_race, 'preferred_race'),
+          preferredBackground: optionalString(args?.preferred_background, 'preferred_background'),
+          playstyle: optionalString(args?.playstyle, 'playstyle') as Playstyle | undefined,
+          campaignType: optionalString(args?.campaign_type, 'campaign_type') as CampaignType | undefined,
+          experienceLevel: optionalString(args?.experience_level, 'experience_level') as ExperienceLevel | undefined,
+          focusLevel: validateOptionalNumberInput(args?.focus_level, 'focus_level', 1, 20),
+          allowMulticlass: args?.allow_multiclass === undefined ? undefined : Boolean(args.allow_multiclass),
+          preferredAbilityScores: validateOptionalStringArray(args?.preferred_ability_scores, 'preferred_ability_scores') as Ability[] | undefined,
+          scope
+        });
 
         return {
           content: [
@@ -1818,26 +1810,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'compare_character_builds': {
-        const { build_options, campaign_type, focus_level } = args || {};
+        const { build_options } = args || {};
 
-        if (!build_options || !Array.isArray(build_options)) {
-          throw new Error('build_options array is required');
+        if (!Array.isArray(build_options) || build_options.length === 0) {
+          throw new Error('build_options must be a non-empty array');
+        }
+        if (build_options.length > 5) {
+          throw new Error('compare at most 5 builds at a time');
         }
 
+        const campaignType = optionalString(args?.campaign_type, 'campaign_type') as CampaignType | undefined;
+        const focusLevel = validateOptionalNumberInput(args?.focus_level, 'focus_level', 1, 20);
         const builds = await Promise.all(
-          build_options.map(async (option: any) => {
-            const buildOptions = {
-              preferredClass: option.preferred_class,
-              preferredRace: option.preferred_race,
-              playstyle: option.playstyle,
-              campaignType: campaign_type as 'combat' | 'roleplay' | 'exploration' | 'mixed' | undefined,
-              focusLevel: Number(focus_level) || 5
-            };
-
-            const build = await open5eClient.generateCharacterBuild(buildOptions);
+          build_options.map(async (option: any, i: number) => {
+            const build = await characterBuilder.build({
+              preferredClass: optionalString(option?.preferred_class, `build_options[${i}].preferred_class`),
+              preferredRace: optionalString(option?.preferred_race, `build_options[${i}].preferred_race`),
+              playstyle: optionalString(option?.playstyle, `build_options[${i}].playstyle`) as Playstyle | undefined,
+              campaignType,
+              focusLevel,
+              scope
+            });
             return {
-              name: option.name || `${build.race.name} ${build.class.name}`,
-              build: build
+              name: optionalString(option?.name, `build_options[${i}].name`) || build.name,
+              build
             };
           })
         );
@@ -1852,8 +1848,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   name: b.name,
                   race: b.build.race.name,
                   class: b.build.class.name,
+                  subclass: b.build.class.subclass?.name ?? null,
                   background: b.build.background.name,
                   playstyle: b.build.playstyle,
+                  hitPoints: b.build.hitPoints.atLevel,
+                  keyAbilityScores: Object.fromEntries(b.build.abilityScorePriority.slice(0, 2)
+                    .map(ability => [ability, b.build.abilityScores.atLevel[ability]])),
                   strengths: b.build.strengths,
                   weaknesses: b.build.weaknesses
                 }))
@@ -1864,91 +1864,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_build_recommendations': {
-        // NOTE: missing_roles is accepted by the schema but not yet used in scoring.
-        const { existing_party, campaign_type, party_level } = args || {};
-
-        if (!existing_party || !campaign_type) {
+        const partyClasses = validateOptionalStringArray(args?.existing_party, 'existing_party');
+        const campaignType = optionalString(args?.campaign_type, 'campaign_type') as CampaignType | undefined;
+        if (!partyClasses || !campaignType) {
           throw new Error('existing_party and campaign_type are required');
         }
+        const focusLevel = validateOptionalNumberInput(args?.party_level, 'party_level', 1, 20);
+        const missingRoles = validateOptionalStringArray(args?.missing_roles, 'missing_roles') ?? [];
 
-        // Analyze party composition
-        const partyClasses = existing_party as string[];
-        const campaignType = campaign_type as 'combat' | 'roleplay' | 'exploration' | 'mixed';
-        
-        // Determine recommended roles based on party composition
-        const hasHealer = partyClasses.some(cls => ['cleric', 'druid', 'bard', 'paladin'].includes(cls.toLowerCase()));
-        const hasTank = partyClasses.some(cls => ['fighter', 'paladin', 'barbarian'].includes(cls.toLowerCase()));
-        const hasDamage = partyClasses.some(cls => ['fighter', 'barbarian', 'rogue', 'ranger', 'warlock'].includes(cls.toLowerCase()));
-        const hasUtility = partyClasses.some(cls => ['wizard', 'bard', 'rogue', 'ranger'].includes(cls.toLowerCase()));
-
-        const recommendations = [];
-
-        // Generate build recommendations based on missing roles
-        if (!hasHealer) {
-          const healerBuild = await open5eClient.generateCharacterBuild({
-            playstyle: 'support',
-            campaignType: campaignType,
-            focusLevel: party_level as number || 5
-          });
-          recommendations.push({
-            role: 'healer/support',
-            priority: 'high',
-            build: healerBuild
-          });
+        // Which roles the party already covers, by class.
+        const covers = (classes: string[]) => partyClasses.some(cls => classes.includes(cls.toLowerCase()));
+        const coverage = {
+          support: covers(['cleric', 'druid', 'bard', 'paladin']),
+          tank: covers(['fighter', 'paladin', 'barbarian']),
+          damage: covers(['fighter', 'barbarian', 'rogue', 'ranger', 'warlock', 'sorcerer']),
+          utility: covers(['wizard', 'bard', 'rogue', 'ranger'])
+        };
+        // Roles asked for explicitly count as missing; "face" and "skill_monkey" are utility.
+        for (const role of missingRoles) {
+          const mapped = role === 'face' || role === 'skill_monkey' ? 'utility' : role;
+          if (mapped in coverage) coverage[mapped as keyof typeof coverage] = false;
         }
 
-        if (!hasTank) {
-          const tankBuild = await open5eClient.generateCharacterBuild({
-            playstyle: 'tank',
-            campaignType: campaignType,
-            focusLevel: party_level as number || 5
-          });
-          recommendations.push({
-            role: 'tank',
-            priority: 'high',
-            build: tankBuild
-          });
-        }
+        const wanted: Array<{ role: string; playstyle: Playstyle; priority: string }> = [];
+        if (!coverage.support) wanted.push({ role: 'healer/support', playstyle: 'support', priority: 'high' });
+        if (!coverage.tank) wanted.push({ role: 'tank', playstyle: 'tank', priority: 'high' });
+        if (!coverage.damage) wanted.push({ role: 'damage dealer', playstyle: 'damage', priority: 'medium' });
+        if (!coverage.utility) wanted.push({ role: 'utility/skills', playstyle: 'utility', priority: 'medium' });
+        if (wanted.length === 0) wanted.push({ role: 'balanced/flexible', playstyle: 'balanced', priority: 'low' });
 
-        if (!hasDamage) {
-          const damageBuild = await open5eClient.generateCharacterBuild({
-            playstyle: 'damage',
-            campaignType: campaignType,
-            focusLevel: party_level as number || 5
-          });
-          recommendations.push({
-            role: 'damage dealer',
-            priority: 'medium',
-            build: damageBuild
-          });
-        }
-
-        if (!hasUtility) {
-          const utilityBuild = await open5eClient.generateCharacterBuild({
-            playstyle: 'utility',
-            campaignType: campaignType,
-            focusLevel: party_level as number || 5
-          });
-          recommendations.push({
-            role: 'utility/skills',
-            priority: 'medium',
-            build: utilityBuild
-          });
-        }
-
-        // If party is well-rounded, suggest balanced builds
-        if (recommendations.length === 0) {
-          const balancedBuild = await open5eClient.generateCharacterBuild({
-            playstyle: 'balanced',
-            campaignType: campaignType,
-            focusLevel: party_level as number || 5
-          });
-          recommendations.push({
-            role: 'balanced/flexible',
-            priority: 'low',
-            build: balancedBuild
-          });
-        }
+        const recommendations = await Promise.all(wanted.map(async ({ role, playstyle, priority }) => ({
+          role,
+          priority,
+          build: await characterBuilder.build({ playstyle, campaignType, focusLevel, scope })
+        })));
 
         return {
           content: [
@@ -1957,12 +1906,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 partyAnalysis: {
                   existingClasses: partyClasses,
-                  hasHealer,
-                  hasTank,
-                  hasDamage,
-                  hasUtility
+                  hasHealer: coverage.support,
+                  hasTank: coverage.tank,
+                  hasDamage: coverage.damage,
+                  hasUtility: coverage.utility
                 },
-                recommendations: recommendations,
+                recommendations,
                 summary: `Based on your party of ${partyClasses.join(', ')}, here are ${recommendations.length} recommended character builds to fill missing roles.`
               }, null, 2),
             },

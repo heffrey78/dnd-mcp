@@ -127,6 +127,26 @@ describe('MCP tools against the live API', () => {
     assert.ok(race.resolved.inheritedTraits.some(t => t.name === 'Hunger for Flesh'));
   });
 
+  test('generate_character_build stays within the 2014 SRD and fills in real numbers', async () => {
+    const build = toolJson(await server.callTool('generate_character_build', {
+      preferred_race: 'halfling', playstyle: 'support', focus_level: 5
+    }));
+
+    assert.deepEqual(build.sources.map(s => s.key), ['srd-2014']);
+    assert.equal(build.race.name, 'Lightfoot');
+    assert.equal(build.race.walkingSpeed, 25);
+    assert.ok(build.hitPoints.atLevel > 0);
+    assert.ok(build.suggestedFeats.every(f => f.source.key === 'srd-2014'));
+    const plan = build.levelProgression.flatMap(p => p.features).join(' ');
+    assert.doesNotMatch(plan, /Level \d+ \w+ features/);
+  });
+
+  test('generate_character_build names the book an out-of-scope choice is in', async () => {
+    const response = await server.callTool('generate_character_build', { preferred_race: 'darakhul' });
+    assert.equal(response.result?.isError, true);
+    assert.match(response.result.content[0].text, /Tome of Heroes \(toh\)/);
+  });
+
   test('search_armor filters locally and does not return the full catalogue', async () => {
     const body = toolJson(await server.callTool('search_armor', { query: 'plate' }));
 

@@ -18,18 +18,18 @@ const bard2014 = {
   saving_throws: [{ name: 'Charisma' }, { name: 'Dexterity' }],
   hit_points: { hit_points_at_1st_level: '8 + your Constitution modifier' },
   features: [
-    { key: 'srd_bard_proficiencies', name: 'Proficiencies', feature_type: 'PROFICIENCIES', gained_at: [], data: [],
+    { key: 'srd_bard_proficiencies', name: 'Proficiencies', feature_type: 'PROFICIENCIES', gained_at: [], data_for_class_table: [],
       desc: '**Armor:** Light armor\r\n**Weapons:** Simple weapons, rapiers\r\n**Skills:** Choose any three' },
     { key: 'srd_bard_bardic-inspiration', name: 'Bardic Inspiration', feature_type: 'CLASS_LEVEL_FEATURE',
-      gained_at: [{ level: 10, detail: 'd10' }, { level: 1, detail: 'd6' }, { level: 5, detail: 'd8' }], data: [], desc: 'Inspire.' },
+      gained_at: [{ level: 10, detail: 'd10' }, { level: 1, detail: 'd6' }, { level: 5, detail: 'd8' }], data_for_class_table: [], desc: 'Inspire.' },
     { key: 'srd_bard_jack', name: 'Jack of All Trades', feature_type: 'CLASS_LEVEL_FEATURE',
-      gained_at: [{ level: 2, detail: null }], data: [], desc: 'Half proficiency.' },
+      gained_at: [{ level: 2, detail: null }], data_for_class_table: [], desc: 'Half proficiency.' },
     // Mis-tagged in Open5e: a table column typed as a level feature.
     { key: 'srd_bard_spells-known', name: 'Spells Known', feature_type: 'CLASS_LEVEL_FEATURE', gained_at: [],
-      data: [{ level: 1, column_value: '4' }, { level: 2, column_value: '5' }], desc: '[Column data]' },
+      data_for_class_table: [{ level: 1, column_value: '4' }, { level: 2, column_value: '5' }], desc: '[Column data]' },
     { key: 'srd_bard_slots-2nd', name: '2nd', feature_type: 'SPELL_SLOTS', gained_at: [],
-      data: [{ level: 4, column_value: '2' }], desc: '[Column data]' },
-    { key: 'srd_bard_equipment', name: 'Equipment', feature_type: 'STARTING_EQUIPMENT', gained_at: [], data: [],
+      data_for_class_table: [{ level: 4, column_value: '2' }], desc: '[Column data]' },
+    { key: 'srd_bard_equipment', name: 'Equipment', feature_type: 'STARTING_EQUIPMENT', gained_at: [], data_for_class_table: [],
       desc: 'A rapier and a lute.' }
   ]
 };
@@ -38,7 +38,7 @@ const bard2024 = {
   key: 'srd-2024_bard', name: 'Bard', document: doc2024, hit_dice: 'D8', caster_type: 'FULL',
   primary_abilities: [], subclass_of: null, saving_throws: [],
   features: [{
-    key: 'srd-2024_bard_core', name: 'Core Bard Traits', feature_type: 'CORE_TRAITS_TABLE', gained_at: [], data: [],
+    key: 'srd-2024_bard_core', name: 'Core Bard Traits', feature_type: 'CORE_TRAITS_TABLE', gained_at: [], data_for_class_table: [],
     desc: '|||\n|---|---|\n|Primary Ability|Charisma|\n|Armor Training|Light armor|\n' +
       '|Weapon Proficiencies|Simple weapons|\n|Starting Equipment|Leather Armor and 19 GP|'
   }]

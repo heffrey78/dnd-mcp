@@ -63,6 +63,8 @@ describe('Open5e v2 row shapes', () => {
     assert.equal(bard.hit_dice, 'D8');
     assert.ok(inspiration.gained_at.some(g => g.level === 1 && g.detail === 'd6'));
     assert.ok(bard.features.some(f => f.feature_type === 'PROFICIENCIES'));
+    const cantrips = bard.features.find(f => f.name === 'Cantrips Known');
+    assert.equal(cantrips.data_for_class_table.length, 20, 'table columns moved out of data_for_class_table');
     assert.deepEqual(bard.primary_abilities, [],
       'primary_abilities is now populated; class-rules.ts key abilities could come from data');
   });
@@ -119,5 +121,12 @@ describe('Open5e v2 row shapes', () => {
     const row = (await get('/v2/rules/?limit=1')).results[0];
     assert.equal(typeof row.document, 'string');
     assert.equal(typeof row.ruleset, 'string');
+  });
+
+  // Known gaps in Open5e's data that the client reports rather than papers
+  // over. When one of these fails, the gap has been fixed upstream.
+  test('known gap: no 2014 SRD spell lists the Paladin', async () => {
+    const body = await get('/v2/spells/?classes__key=srd_paladin&limit=1');
+    assert.equal(body.count, 0, 'srd_paladin now has spells; builds will suggest them automatically');
   });
 });
