@@ -25,7 +25,7 @@ describe('name queries are routed per endpoint', () => {
   // Endpoints where Open5e honours name__icontains server-side.
   const serverFiltered = [
     ['searchSpells', '/v2/spells/', [{ name: 'Fireball', level: 3 }]],
-    ['searchMonsters', '/v1/monsters/', [{ name: 'Goblin' }]],
+    ['searchMonsters', '/v2/creatures/', [{ name: 'Goblin' }]],
     ['searchMagicItems', '/v1/magicitems/', [{ name: 'Bag of Beans' }]],
     ['searchFeats', '/v2/feats/', [{ name: 'Alert' }]],
     ['searchBackgrounds', '/v2/backgrounds/', [{ name: 'Soldier' }]],

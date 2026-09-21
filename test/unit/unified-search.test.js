@@ -94,7 +94,7 @@ describe('result assembly', () => {
 
   test('an upstream failure degrades that content type instead of the whole search', async () => {
     mock = installMockFetch(url =>
-      url.pathname.includes('monsters')
+      url.pathname.includes('creatures')
         ? { __status: 500, __statusText: 'Error', __body: 'boom' }
         : page([{ name: 'Dragon Spell', level: 1 }])
     );

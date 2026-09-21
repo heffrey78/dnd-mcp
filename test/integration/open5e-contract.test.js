@@ -21,13 +21,6 @@ async function get(path) {
 const names = body => (body.results || []).map(r => r.name);
 
 describe('Open5e filter contract', () => {
-  test('name__icontains filters v1 monsters by name', async () => {
-    const body = await get('/v1/monsters/?name__icontains=goblin');
-
-    assert.ok(body.count > 0);
-    assert.ok(names(body).every(n => n.toLowerCase().includes('goblin')));
-  });
-
   test('name__icontains filters v2 species by name', async () => {
     const body = await get('/v2/species/?name__icontains=elf');
 

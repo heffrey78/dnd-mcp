@@ -118,14 +118,25 @@ export interface EnhancedRaceData {
   source: SourceLabel;
 }
 
+export interface MonsterAction {
+  name: string;
+  desc: string;
+  /** Legendary actions only: how many legendary actions it costs. */
+  cost?: number;
+}
+
 export interface MonsterData {
   name: string;
+  key: string;
   size: string;
   type: string;
+  subcategory?: string;
   alignment: string;
   armorClass: number;
+  armorDetail?: string;
   hitPoints: number;
   hitDice: string;
+  /** Movement modes in feet, e.g. { walk: 40, fly: 80, unit: "feet" }. */
   speed: Record<string, any>;
   abilities: {
     strength: number;
@@ -135,19 +146,25 @@ export interface MonsterData {
     wisdom: number;
     charisma: number;
   };
-  savingThrows?: string;
-  skills?: string;
+  /** Proficient saves and their bonuses, e.g. { dexterity: 6 }. */
+  savingThrows: Record<string, number>;
+  skills: Record<string, number>;
+  damageVulnerabilities?: string;
   damageResistances?: string;
   damageImmunities?: string;
   conditionImmunities?: string;
-  senses?: string;
-  languages?: string;
+  senses: string;
+  languages: string;
+  /** As the DMG writes it: "1/4", "5". */
   challengeRating: string;
-  actions: any[];
-  specialAbilities?: any[];
-  reactions?: any[];
-  legendaryActions?: any[];
-  description?: string;
+  experiencePoints?: number;
+  actions: MonsterAction[];
+  bonusActions: MonsterAction[];
+  reactions: MonsterAction[];
+  legendaryActions: MonsterAction[];
+  specialAbilities: MonsterAction[];
+  environments: string[];
+  source: SourceLabel;
   url: string;
 }
 
@@ -293,6 +310,7 @@ export interface EncounterBuilderOptions {
   maxCR?: number;
   monsterTypes?: string[];
   maxMonsters?: number;
+  scope?: ContentScope;
 }
 
 export interface CharacterBuildData {
@@ -367,7 +385,14 @@ export class Open5eClient {
   async query<E extends EndpointName>(
     endpoint: E,
     filters: FiltersFor<E> = {},
-    options: { limit?: number; ordering?: string; fields?: string[] } = {}
+    options: {
+      limit?: number;
+      ordering?: string;
+      /** Return only these fields (v2 sparse fieldsets). */
+      fields?: string[];
+      /** Page through every match rather than returning the first page. */
+      all?: boolean;
+    } = {}
   ): Promise<{ count: number; rows: any[]; hasMore: boolean }> {
     const spec: EndpointSpec = ENDPOINTS[endpoint];
     const params: Record<string, any> = {};
@@ -393,35 +418,84 @@ export class Open5eClient {
       params.ordering = options.ordering;
     }
 
-    // Sparse fieldsets: v2 returns only the named fields.
     if (options.fields !== undefined) params.fields = options.fields;
 
     let result: { count: number; rows: any[]; hasMore: boolean };
 
-    if (locals.length === 0) {
+    if (locals.length === 0 && !options.all) {
       if (options.limit !== undefined) params.limit = options.limit;
       const response = await this.makeRequest<Open5eResponse<any>>(spec.path, params);
       result = { count: response.count, rows: response.results, hasMore: !!response.next };
     } else {
-      const rows: any[] = [];
-      for (let page = 1; ; page++) {
-        const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
-          ...params, limit: PAGE_MAX, ...(page > 1 ? { page } : {})
-        });
-        rows.push(...response.results);
-        if (!response.next) break;
-        if (page >= Open5eClient.MAX_LOCAL_SCAN_PAGES) {
-          throw new Error(`Too many ${endpoint} to filter locally ` +
-            `(over ${PAGE_MAX * page}); narrow the query`);
-        }
+      // Local filters must see the whole server-filtered set. On a large
+      // collection, scan a sparse fieldset and fetch full rows for the matches
+      // afterwards (see EndpointSpec.scanFields).
+      const sparse = spec.scanFields !== undefined && locals.length > 0;
+      const hydrate = sparse && options.fields === undefined;
+      if (sparse) {
+        params.fields = [...new Set(['key', 'name', ...spec.scanFields!, ...(options.fields ?? [])])];
       }
+
+      const rows = await this.fetchAllPages(endpoint, params);
       const matched = rows.filter(row => locals.every(([match, value]) => match(row, value)));
-      const limited = options.limit !== undefined ? matched.slice(0, options.limit) : matched;
-      result = { count: matched.length, rows: limited, hasMore: limited.length < matched.length };
+      const wanted = options.limit ?? (hydrate ? Open5eClient.DEFAULT_HYDRATE_LIMIT : matched.length);
+      const limited = matched.slice(0, wanted);
+
+      result = {
+        count: matched.length,
+        rows: hydrate ? await this.fetchByKeys(endpoint, limited.map(row => row.key)) : limited,
+        hasMore: limited.length < matched.length
+      };
     }
 
     await this.embedDocuments(result.rows);
     return result;
+  }
+
+  /** Full rows fetched after a sparse scan when the caller gives no limit. */
+  private static readonly DEFAULT_HYDRATE_LIMIT = 50;
+
+  /** Every page of a query, up to MAX_LOCAL_SCAN_PAGES. */
+  private async fetchAllPages(endpoint: EndpointName, params: Record<string, any>): Promise<any[]> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const rows: any[] = [];
+    for (let page = 1; ; page++) {
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
+        ...params, limit: PAGE_MAX, ...(page > 1 ? { page } : {})
+      });
+      rows.push(...response.results);
+      if (!response.next) return rows;
+      if (page >= Open5eClient.MAX_LOCAL_SCAN_PAGES) {
+        throw new Error(`Too many ${endpoint} to filter locally ` +
+          `(over ${PAGE_MAX * page}); narrow the query`);
+      }
+    }
+  }
+
+  /**
+   * Full rows for `keys`, in the order given. Keys are sent through the
+   * endpoint's `keys` filter in batches that keep the URL short.
+   */
+  private async fetchByKeys(endpoint: EndpointName, keys: string[]): Promise<any[]> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const keyParam = (spec.filters.keys as { server?: string } | undefined)?.server;
+    if (!keyParam) throw new Error(`${spec.path} has no "keys" filter to fetch rows by`);
+
+    const batches: string[][] = [[]];
+    for (const key of keys) {
+      const batch = batches[batches.length - 1];
+      if (batch.length > 0 && [...batch, key].join(',').length > 900) batches.push([key]);
+      else batch.push(key);
+    }
+
+    const fetched = new Map<string, any>();
+    for (const batch of batches.filter(b => b.length > 0)) {
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
+        [keyParam]: batch, limit: batch.length
+      });
+      for (const row of response.results) fetched.set(row.key, row);
+    }
+    return keys.map(key => fetched.get(key)).filter(row => row !== undefined);
   }
 
   private documentIndexPromise?: Promise<Map<string, SourceLabel>>;
@@ -1027,63 +1101,137 @@ export class Open5eClient {
     return ABILITIES.filter(ability => text.toLowerCase().includes(ability));
   }
 
-  // New monster functionality
+  // Monsters
   async searchMonsters(query?: string, options: {
     cr?: number;
+    minCr?: number;
+    maxCr?: number;
+    /** One creature type key ("dragon"); an unknown type is an error upstream. */
+    type?: string;
+    /** Any of several types, matched locally. */
+    types?: string[];
+    environment?: string;
     limit?: number;
-    documentSlug?: string;
+    ordering?: string;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.cr !== undefined) params.cr = options.cr;
-    if (options.limit) params.limit = options.limit;
-    if (options.documentSlug) params.document__slug = options.documentSlug;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/monsters/', params);
-
-    const transformedResults: MonsterData[] = response.results.map(monster => ({
-      name: monster.name,
-      size: monster.size,
-      type: monster.type,
-      alignment: monster.alignment,
-      armorClass: monster.armor_class,
-      hitPoints: monster.hit_points,
-      hitDice: monster.hit_dice,
-      speed: monster.speed,
-      abilities: {
-        strength: monster.strength,
-        dexterity: monster.dexterity,
-        constitution: monster.constitution,
-        intelligence: monster.intelligence,
-        wisdom: monster.wisdom,
-        charisma: monster.charisma
-      },
-      savingThrows: monster.saving_throws,
-      skills: monster.skills,
-      damageResistances: monster.damage_resistances,
-      damageImmunities: monster.damage_immunities,
-      conditionImmunities: monster.condition_immunities,
-      senses: monster.senses,
-      languages: monster.languages,
-      challengeRating: monster.challenge_rating,
-      actions: monster.actions || [],
-      specialAbilities: monster.special_abilities || [],
-      reactions: monster.reactions || [],
-      legendaryActions: monster.legendary_actions || [],
-      description: monster.desc,
-      url: monster.url
-    }));
+    const response = await this.query('creatures', {
+      name: query,
+      cr: options.cr,
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      type: options.type?.trim().toLowerCase(),
+      types: options.types && options.types.length > 0 ? options.types : undefined,
+      environment: options.environment,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, ordering: options.ordering });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(monster => this.transformMonster(monster)),
+      hasMore: response.hasMore
     };
   }
 
-  async getMonstersByCR(challengeRating: number): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
-    return this.searchMonsters('', { cr: challengeRating, limit: 20 });
+  async getMonstersByCR(challengeRating: number, scope?: ContentScope): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
+    return this.searchMonsters('', { cr: challengeRating, limit: 20, scope });
+  }
+
+  /** Monsters within a CR range, lowest CR first. */
+  async getMonstersByCRRange(options: {
+    minCr: number;
+    maxCr: number;
+    environment?: string;
+    types?: string[];
+    limit?: number;
+    scope?: ContentScope;
+  }): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
+    if (options.minCr > options.maxCr) {
+      throw new Error(`min_cr (${options.minCr}) is greater than max_cr (${options.maxCr})`);
+    }
+    return this.searchMonsters('', {
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      environment: options.environment,
+      types: options.types,
+      limit: options.limit ?? 50,
+      ordering: 'challenge_rating',
+      scope: options.scope
+    });
+  }
+
+  /** "1/8", "1/4", "1/2" for fractional CRs, as the DMG writes them. */
+  private formatChallengeRating(value: unknown): string {
+    const cr = Number(value);
+    if (!Number.isFinite(cr)) return String(value ?? '');
+    const fractions: Record<number, string> = { 0.125: '1/8', 0.25: '1/4', 0.5: '1/2' };
+    return fractions[cr] ?? String(cr);
+  }
+
+  private transformMonster(monster: any): MonsterData {
+    const actions: any[] = monster.actions ?? [];
+    const ofType = (type: string) => actions
+      .filter(action => action.action_type === type)
+      .map(action => ({
+        name: action.name,
+        desc: action.desc,
+        ...(type === 'LEGENDARY_ACTION' && action.legendary_action_cost ? { cost: action.legendary_action_cost } : {})
+      }));
+
+    const speed: Record<string, number | string | boolean> = {};
+    for (const [mode, value] of Object.entries(monster.speed ?? {})) {
+      if (value !== 0 && value !== false && value !== null) speed[mode] = value as any;
+    }
+
+    const senses = [
+      ['blindsight', monster.blindsight_range],
+      ['darkvision', monster.darkvision_range],
+      ['tremorsense', monster.tremorsense_range],
+      ['truesight', monster.truesight_range]
+    ].filter(([, range]) => range).map(([sense, range]) => `${sense} ${range} ft.`);
+    if (monster.passive_perception != null) senses.push(`passive Perception ${monster.passive_perception}`);
+
+    const defences = monster.resistances_and_immunities ?? {};
+
+    return {
+      name: monster.name,
+      key: monster.key ?? '',
+      size: monster.size?.name ?? '',
+      type: monster.type?.name ?? '',
+      subcategory: monster.subcategory || undefined,
+      alignment: monster.alignment ?? '',
+      armorClass: monster.armor_class,
+      armorDetail: monster.armor_detail || undefined,
+      hitPoints: monster.hit_points,
+      hitDice: monster.hit_dice ?? '',
+      speed,
+      abilities: {
+        strength: monster.ability_scores?.strength,
+        dexterity: monster.ability_scores?.dexterity,
+        constitution: monster.ability_scores?.constitution,
+        intelligence: monster.ability_scores?.intelligence,
+        wisdom: monster.ability_scores?.wisdom,
+        charisma: monster.ability_scores?.charisma
+      },
+      savingThrows: monster.saving_throws ?? {},
+      skills: monster.skill_bonuses ?? {},
+      damageVulnerabilities: defences.damage_vulnerabilities_display || undefined,
+      damageResistances: defences.damage_resistances_display || undefined,
+      damageImmunities: defences.damage_immunities_display || undefined,
+      conditionImmunities: defences.condition_immunities_display || undefined,
+      senses: senses.join(', '),
+      languages: monster.languages?.as_string ?? '',
+      challengeRating: this.formatChallengeRating(monster.challenge_rating),
+      experiencePoints: monster.experience_points,
+      actions: ofType('ACTION'),
+      bonusActions: ofType('BONUS_ACTION'),
+      reactions: ofType('REACTION'),
+      legendaryActions: ofType('LEGENDARY_ACTION'),
+      specialAbilities: (monster.traits ?? []).map((trait: any) => ({ name: trait.name, desc: trait.desc })),
+      environments: (monster.environments ?? []).map((env: any) => env.name),
+      source: sourceOf(monster),
+      url: monster.key ? `https://api.open5e.com/v2/creatures/${monster.key}/` : ''
+    };
   }
 
   // Weapons
@@ -1474,6 +1622,15 @@ export class Open5eClient {
     20: { easy: 2800, medium: 5700, hard: 8500, deadly: 12700 }
   };
 
+  /** DMG p.274 XP for a challenge rating written as "1/4" or "5"; throws on an unknown CR. */
+  xpForChallengeRating(cr: string): number {
+    const xp = this.CR_TO_XP[cr.trim()];
+    if (xp === undefined) {
+      throw new Error(`Unknown challenge rating "${cr}". Use 0, 1/8, 1/4, 1/2 or 1-30`);
+    }
+    return xp;
+  }
+
   // DMG p.82 encounter multipliers, keyed by number of monsters:
   // 1 -> x1, 2 -> x1.5, 3-6 -> x2, 7-10 -> x2.5, 11-14 -> x3, 15+ -> x4.
   private readonly XP_MULTIPLIERS: Record<number, number> = {
@@ -1494,7 +1651,9 @@ export class Open5eClient {
     const totalBudget = budgetPerCharacter * partySize;
     
     // Get monsters within CR range
-    const monsters = await this.getMonstersByCRRange(minCR, maxCR, environment, options.monsterTypes);
+    const monsters = await this.sampleMonstersByCR({
+      minCr: minCR, maxCr: maxCR, environment, types: options.monsterTypes, scope: options.scope
+    });
     
     if (monsters.length === 0) {
       throw new Error('No monsters found matching criteria');
@@ -1528,46 +1687,39 @@ export class Open5eClient {
     return encounter;
   }
 
-  private async getMonstersByCRRange(minCR: number, maxCR: number, environment?: string, types?: string[]): Promise<MonsterData[]> {
-    const allMonsters: MonsterData[] = [];
-    
-    // Iterate through CR range and fetch monsters
-    for (let cr = minCR; cr <= maxCR; cr++) {
-      try {
-        // Handle CR 0 specially - get fractional CRs instead
-        if (cr === 0) {
-          const fractions = ['1/8', '1/4', '1/2'];
-          for (const fraction of fractions) {
-            const fracResults = await this.searchMonsters('', { cr: fraction as any, limit: 50 });
-            allMonsters.push(...fracResults.results);
-          }
-        } else {
-          const results = await this.searchMonsters('', { cr: cr, limit: 50 });
-          allMonsters.push(...results.results);
-        }
-      } catch (error) {
-        console.warn(`Failed to fetch monsters for CR ${cr}:`, error);
-      }
+  /**
+   * A random sample of the monsters in a CR range. The whole range is scanned
+   * as a sparse fieldset and the sample drawn from all of it, so an encounter
+   * is not limited to whichever monsters sort first alphabetically.
+   */
+  private async sampleMonstersByCR(options: {
+    minCr: number;
+    maxCr: number;
+    environment?: string;
+    types?: string[];
+    scope?: ContentScope;
+  }, sampleSize: number = Open5eClient.ENCOUNTER_SAMPLE_SIZE): Promise<MonsterData[]> {
+    const candidates = await this.query('creatures', {
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      environment: options.environment,
+      types: options.types && options.types.length > 0 ? options.types : undefined,
+      documents: await this.scopeDocuments(options.scope)
+    }, { all: true, fields: ['key'] });
+
+    const keys = candidates.rows.map(row => row.key as string);
+    for (let i = keys.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [keys[i], keys[j]] = [keys[j], keys[i]];
     }
-    
-    // Filter by environment and type if specified
-    let filteredMonsters = allMonsters;
-    
-    if (environment) {
-      filteredMonsters = filteredMonsters.filter(monster => 
-        monster.description?.toLowerCase().includes(environment.toLowerCase()) ||
-        monster.type.toLowerCase().includes(environment.toLowerCase())
-      );
-    }
-    
-    if (types && types.length > 0) {
-      filteredMonsters = filteredMonsters.filter(monster =>
-        types.some(type => monster.type.toLowerCase().includes(type.toLowerCase()))
-      );
-    }
-    
-    return filteredMonsters;
+
+    const rows = await this.fetchByKeys('creatures', keys.slice(0, sampleSize));
+    await this.embedDocuments(rows);
+    return rows.map(row => this.transformMonster(row));
   }
+
+  /** How many candidate monsters an encounter is built from. */
+  private static readonly ENCOUNTER_SAMPLE_SIZE = 60;
 
   private allocateMonstersToEncounter(monsters: MonsterData[], budget: number, maxMonsters: number): EncounterMonster[] {
     const encounterMonsters: EncounterMonster[] = [];

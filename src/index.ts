@@ -57,6 +57,26 @@ function validateOptionalNumberInput(value: any, fieldName: string, min: number 
   return value;
 }
 
+/** A CR as a number: 0-30, with 0.125, 0.25 and 0.5 for the fractional ones. */
+function validateChallengeRating(value: any, fieldName: string): number {
+  if (typeof value !== 'number' || !isFinite(value) || value < 0 || value > 30) {
+    throw new Error(`${fieldName} must be a number between 0 and 30`);
+  }
+  if (!Number.isInteger(value) && ![0.125, 0.25, 0.5].includes(value)) {
+    throw new Error(`${fieldName} must be a whole number or 0.125, 0.25 or 0.5`);
+  }
+  return value;
+}
+
+/** An optional list of strings; anything else is rejected rather than ignored. */
+function validateOptionalStringArray(value: any, fieldName: string): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
+    throw new Error(`${fieldName} must be an array of strings`);
+  }
+  return value.map((item: string) => item.trim()).filter(item => item.length > 0);
+}
+
 /** A string argument that may be omitted; present, it must be a string. */
 function optionalString(value: any, fieldName: string): string | undefined {
   if (value === undefined || value === null) return undefined;
@@ -84,6 +104,8 @@ const SCOPED_TOOLS = new Set([
   'search_spells', 'get_spell_details', 'get_spell_by_level', 'get_spells_by_class',
   'search_classes', 'get_class_details',
   'search_races', 'get_race_details',
+  'search_monsters', 'get_monsters_by_cr', 'get_monsters_by_cr_range',
+  'build_encounter', 'calculate_encounter_difficulty',
   'search_weapons', 'search_armor', 'get_armor_details',
   'search_feats', 'get_feat_details',
   'search_conditions', 'get_condition_details', 'get_all_conditions',
@@ -361,9 +383,17 @@ const tools: Tool[] = [
         },
         challenge_rating: {
           type: 'number',
-          description: 'Filter by challenge rating',
+          description: 'Filter by challenge rating (0.125, 0.25 and 0.5 for fractional CRs)',
           minimum: 0,
           maximum: 30,
+        },
+        type: {
+          type: 'string',
+          description: 'Filter by creature type, e.g. "dragon", "undead"',
+        },
+        environment: {
+          type: 'string',
+          description: 'Filter by environment, e.g. "forest", "underworld"',
         },
         limit: {
           type: 'number',
@@ -1214,13 +1244,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // NEW: Monster tools
       case 'search_monsters': {
-        const { query, challenge_rating, limit } = args || {};
-        const options: any = {};
-        
-        if (challenge_rating !== undefined) options.cr = challenge_rating;
-        if (limit) options.limit = limit;
+        const { query, challenge_rating } = args || {};
+        const options: any = {
+          type: optionalString(args?.type, 'type'),
+          environment: optionalString(args?.environment, 'environment'),
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 50),
+          scope
+        };
 
-        const results = await open5eClient.searchMonsters(query as string, options);
+        if (challenge_rating !== undefined) options.cr = validateChallengeRating(challenge_rating, 'challenge_rating');
+
+        const results = await open5eClient.searchMonsters(optionalString(query, 'query'), options);
 
         return {
           content: [
@@ -1238,17 +1272,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_monsters_by_cr': {
-        // CR runs 0-30; fractional CRs are requested as 0.125/0.25/0.5.
-        const challengeRating = args?.challenge_rating;
-        if (challengeRating === undefined || challengeRating === null) {
+        if (args?.challenge_rating === undefined || args?.challenge_rating === null) {
           throw new Error('challenge_rating is required');
         }
-        if (typeof challengeRating !== 'number' || !isFinite(challengeRating) ||
-            challengeRating < 0 || challengeRating > 30) {
-          throw new Error('challenge_rating must be a number between 0 and 30');
-        }
+        const challengeRating = validateChallengeRating(args.challenge_rating, 'challenge_rating');
 
-        const results = await open5eClient.getMonstersByCR(challengeRating as number);
+        const results = await open5eClient.getMonstersByCR(challengeRating, scope);
 
         return {
           content: [
@@ -1693,8 +1722,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           environment: environment as string | undefined,
           minCR: validateOptionalNumberInput(min_cr, 'min_cr', 0, 30),
           maxCR: validateOptionalNumberInput(max_cr, 'max_cr', 0, 30),
-          monsterTypes: monster_types as string[] | undefined,
-          maxMonsters: validateOptionalNumberInput(max_monsters, 'max_monsters', 1, 30)
+          monsterTypes: validateOptionalStringArray(monster_types, 'monster_types'),
+          maxMonsters: validateOptionalNumberInput(max_monsters, 'max_monsters', 1, 30),
+          scope
         };
 
         const encounter = await open5eClient.buildRandomEncounter(options);
@@ -1711,43 +1741,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'calculate_encounter_difficulty': {
         const { party_size, party_level, monsters } = args || {};
-        
+
         if (!party_size || !party_level || !monsters) {
           throw new Error('party_size, party_level, and monsters are required');
         }
-
-        // Create a client reference to access the private XP table
-        const client = open5eClient as any;
-        const CR_TO_XP = client.CR_TO_XP || {
-          '0': 10, '1/8': 25, '1/4': 50, '1/2': 100,
-          '1': 200, '2': 450, '3': 700, '4': 1100, '5': 1800,
-          '6': 2300, '7': 2900, '8': 3900, '9': 5000, '10': 5900,
-          '11': 7200, '12': 8400, '13': 10000, '14': 11500, '15': 13000,
-          '16': 15000, '17': 18000, '18': 20000, '19': 22000, '20': 25000,
-          '21': 33000, '22': 41000, '23': 50000, '24': 62000, '30': 155000
-        };
+        if (!Array.isArray(monsters)) {
+          throw new Error('monsters must be an array');
+        }
 
         const encounterMonsters = await Promise.all(
-          (monsters as Array<{name: string, cr: string, count: number}>).map(async (monster) => {
-            const monsterDetails = await open5eClient.searchMonsters(monster.name, { limit: 1 });
-            if (monsterDetails.results.length === 0) {
-              throw new Error(`Monster "${monster.name}" not found`);
+          (monsters as Array<{ name: string, cr: string, count: number }>).map(async (monster, i) => {
+            const monsterName = validateStringInput(monster?.name, `monsters[${i}].name`);
+            const cr = validateStringInput(String(monster?.cr ?? ''), `monsters[${i}].cr`);
+            const count = validateNumberInput(monster?.count, `monsters[${i}].count`, 1, 100);
+            const xp = open5eClient.xpForChallengeRating(cr);
+
+            const matches = await open5eClient.searchMonsters(monsterName, { limit: 20, scope });
+            const monsterData = matches.results.find(m => m.name.toLowerCase() === monsterName.toLowerCase())
+              ?? matches.results[0];
+            if (!monsterData) {
+              throw new Error(`Monster "${monsterName}" not found`);
             }
-            const xp = CR_TO_XP[monster.cr] || 0;
-            return {
-              name: monster.name,
-              cr: monster.cr,
-              count: monster.count,
-              xp: xp,
-              totalXP: xp * monster.count,
-              monsterData: monsterDetails.results[0]
-            };
+            return { name: monsterName, cr, count, xp, totalXP: xp * count, monsterData };
           })
         );
 
         const difficulty = await open5eClient.getEncounterDifficulty(
-          party_size as number,
-          party_level as number,
+          validateNumberInput(party_size, 'party_size', 1, 12),
+          validateNumberInput(party_level, 'party_level', 1, 20),
           encounterMonsters
         );
 
@@ -1768,69 +1789,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_monsters_by_cr_range': {
-        const { min_cr, max_cr, environment, monster_types, limit } = args || {};
-        
+        const { min_cr, max_cr } = args || {};
+
         if (min_cr === undefined || max_cr === undefined) {
           throw new Error('min_cr and max_cr are required');
         }
 
-        const minCR = min_cr as number;
-        const maxCR = max_cr as number;
-        const envFilter = environment as string | undefined;
-        const typeFilter = monster_types as string[] | undefined;
-        const limitValue = limit as number | undefined;
-
-        // Since getMonstersByCRRange is private, we'll build the monster list ourselves
-        const allMonsters: any[] = [];
-        
-        // Iterate through CR range and fetch monsters
-        for (let cr = minCR; cr <= maxCR; cr++) {
-          try {
-            // Handle CR 0 specially - get fractional CRs instead
-            if (cr === 0) {
-              const fractions = ['1/8', '1/4', '1/2'];
-              for (const fraction of fractions) {
-                const fracResults = await open5eClient.searchMonsters('', { cr: fraction as any, limit: 50 });
-                allMonsters.push(...fracResults.results);
-              }
-            } else {
-              const results = await open5eClient.searchMonsters('', { cr: cr, limit: 50 });
-              allMonsters.push(...results.results);
-            }
-          } catch (error) {
-            console.warn(`Failed to fetch monsters for CR ${cr}:`, error);
-          }
-        }
-        
-        // Filter by environment and type if specified
-        let filteredMonsters = allMonsters;
-        
-        if (envFilter) {
-          filteredMonsters = filteredMonsters.filter(monster => 
-            monster.description?.toLowerCase().includes(envFilter.toLowerCase()) ||
-            monster.type.toLowerCase().includes(envFilter.toLowerCase())
-          );
-        }
-        
-        if (typeFilter && typeFilter.length > 0) {
-          filteredMonsters = filteredMonsters.filter(monster =>
-            typeFilter.some((type: string) => monster.type.toLowerCase().includes(type.toLowerCase()))
-          );
-        }
-        
-        // Apply limit if specified
-        if (limitValue) {
-          filteredMonsters = filteredMonsters.slice(0, limitValue);
-        }
+        const minCr = validateChallengeRating(min_cr, 'min_cr');
+        const maxCr = validateChallengeRating(max_cr, 'max_cr');
+        const results = await open5eClient.getMonstersByCRRange({
+          minCr,
+          maxCr,
+          environment: optionalString(args?.environment, 'environment'),
+          types: validateOptionalStringArray(args?.monster_types, 'monster_types'),
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 100),
+          scope
+        });
 
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                crRange: `${minCR}-${maxCR}`,
-                count: filteredMonsters.length,
-                monsters: filteredMonsters
+                crRange: `${minCr}-${maxCr}`,
+                found: results.count,
+                showing: results.results.length,
+                hasMore: results.hasMore,
+                monsters: results.results
               }, null, 2),
             },
           ],

@@ -25,6 +25,13 @@ export interface EndpointSpec {
   filters: Record<string, FilterRule>;
   /** Accepted `ordering` values; anything else is rejected. */
   ordering?: readonly string[];
+  /**
+   * For large collections: the fields the local predicates read. Local
+   * filtering then scans only these (plus `key`) and fetches full rows for
+   * the matches through the `keys` filter, instead of downloading every
+   * full row. Requires a `keys` server filter.
+   */
+  scanFields?: readonly string[];
 }
 
 /** Largest page Open5e serves; `limit` above this is capped upstream. */
@@ -62,13 +69,20 @@ export const ENDPOINTS = {
       maxCr: { server: 'challenge_rating__lte' },
       // `type__key` is ignored; `type` takes the key and rejects unknown ones.
       type: { server: 'type' },
+      keys: { server: 'key__in' },
+      // Any of several types; `type` takes only one.
+      types: {
+        local: (row, values: readonly string[]) => values.some(value =>
+          lower(row.type?.key) === lower(value) || lower(row.type?.name).includes(lower(value)))
+      },
       // Neither `environments` nor `environments__key` filters.
       environment: {
         local: (row, value: string) => (row.environments ?? []).some((env: any) =>
           lower(env.key) === lower(value) || lower(env.name).includes(lower(value)))
       }
     },
-    ordering: ['name', '-name', 'challenge_rating', '-challenge_rating']
+    ordering: ['name', '-name', 'challenge_rating', '-challenge_rating'],
+    scanFields: ['type', 'environments']
   },
   magicitems: {
     path: '/v2/magicitems/',

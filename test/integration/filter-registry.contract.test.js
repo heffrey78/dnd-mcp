@@ -44,6 +44,7 @@ const PROBES = {
   'creatures.minCr': { valid: 20, invalid: 31 },
   'creatures.maxCr': { valid: 1 },
   'creatures.type': { valid: 'dragon', invalid: 'bogus' },
+  'creatures.keys': { valid: ['srd_goblin', 'srd_orc'], invalid: ['bogus'] },
 
   'magicitems.name': { valid: 'holding', invalid: 'zzzznomatch' },
   'magicitems.documents': { valid: ['srd-2014'], invalid: ['bogus'] },

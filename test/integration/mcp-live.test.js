@@ -61,6 +61,38 @@ describe('MCP tools against the live API', () => {
     assert.ok(matchesName(body.monsters, 'goblin'));
   });
 
+  test('build_encounter filters by environment on structured v2 data', async () => {
+    const encounter = toolJson(await server.callTool('build_encounter', {
+      party_size: 4, party_level: 3, difficulty: 'medium', environment: 'forest', ruleset: '5e-2014'
+    }));
+
+    assert.ok(encounter.monsters.length > 0);
+    for (const { monsterData } of encounter.monsters) {
+      assert.ok(monsterData.environments.some(env => env.toLowerCase().includes('forest')),
+        `${monsterData.name} is not a forest monster: ${monsterData.environments}`);
+      assert.equal(monsterData.source.ruleset, '5e-2014');
+    }
+  });
+
+  test('get_monsters_by_cr_range stays inside the range', async () => {
+    const body = toolJson(await server.callTool('get_monsters_by_cr_range', {
+      min_cr: 0.25, max_cr: 1, monster_types: ['undead'], limit: 20
+    }));
+
+    assert.ok(body.monsters.length > 0);
+    const crs = { '1/4': 0.25, '1/2': 0.5, '1': 1 };
+    assert.ok(body.monsters.every(m => m.challengeRating in crs && m.type === 'Undead'),
+      body.monsters.map(m => `${m.name} ${m.challengeRating} ${m.type}`).join('; '));
+  });
+
+  test('calculate_encounter_difficulty rejects an unknown CR instead of scoring it 0 XP', async () => {
+    const response = await server.callTool('calculate_encounter_difficulty', {
+      party_size: 4, party_level: 5, monsters: [{ name: 'Goblin', cr: '1/3', count: 2 }]
+    });
+    assert.equal(response.result?.isError, true);
+    assert.match(response.result.content[0].text, /Unknown challenge rating/);
+  });
+
   test('search_armor filters locally and does not return the full catalogue', async () => {
     const body = toolJson(await server.callTool('search_armor', { query: 'plate' }));
 
