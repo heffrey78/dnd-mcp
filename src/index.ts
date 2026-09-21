@@ -1003,10 +1003,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_spell_details': {
-        const spellName = args?.spell_name as string;
-        if (!spellName) {
-          throw new Error('spell_name is required');
-        }
+        const spellName = validateStringInput(args?.spell_name, 'spell_name');
 
         const spell = await open5eClient.getSpellDetails(spellName);
         if (!spell) {
@@ -1031,10 +1028,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_spell_by_level': {
-        const level = args?.level as number;
-        if (level === undefined) {
-          throw new Error('level is required');
-        }
+        // Spell levels are 0 (cantrip) through 9; anything else is a client
+        // error, not an empty result set.
+        const level = validateNumberInput(args?.level, 'level', 0, 9);
         const results = await open5eClient.getSpellsByLevel(level);
 
         return {
@@ -1054,10 +1050,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_spells_by_class': {
-        const className = args?.class_name as string;
-        if (!className) {
-          throw new Error('class_name is required');
-        }
+        const className = validateStringInput(args?.class_name, 'class_name');
 
         const spells = await open5eClient.getSpellsByClass(className);
 
@@ -1093,10 +1086,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_class_details': {
-        const className = args?.class_name as string;
-        if (!className) {
-          throw new Error('class_name is required');
-        }
+        const className = validateStringInput(args?.class_name, 'class_name');
 
         const classData = await open5eClient.getClassDetails(className);
         if (!classData) {
@@ -1141,10 +1131,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_race_details': {
-        const raceName = args?.race_name as string;
-        if (!raceName) {
-          throw new Error('race_name is required');
-        }
+        const raceName = validateStringInput(args?.race_name, 'race_name');
 
         const race = await open5eClient.getRaceDetails(raceName);
         if (!race) {
@@ -1194,12 +1181,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_monsters_by_cr': {
-        const challengeRating = args?.challenge_rating as number;
-        if (challengeRating === undefined) {
+        // CR runs 0-30; fractional CRs are requested as 0.125/0.25/0.5.
+        const challengeRating = args?.challenge_rating;
+        if (challengeRating === undefined || challengeRating === null) {
           throw new Error('challenge_rating is required');
         }
+        if (typeof challengeRating !== 'number' || !isFinite(challengeRating) ||
+            challengeRating < 0 || challengeRating > 30) {
+          throw new Error('challenge_rating must be a number between 0 and 30');
+        }
 
-        const results = await open5eClient.getMonstersByCR(challengeRating);
+        const results = await open5eClient.getMonstersByCR(challengeRating as number);
 
         return {
           content: [
@@ -1370,10 +1362,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_armor_details': {
-        const armorName = args?.armor_name as string;
-        if (!armorName) {
-          throw new Error('armor_name is required');
-        }
+        const armorName = validateStringInput(args?.armor_name, 'armor_name');
 
         const armor = await open5eClient.getArmorDetails(armorName);
         if (!armor) {
@@ -1423,10 +1412,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_feat_details': {
-        const featName = args?.feat_name as string;
-        if (!featName) {
-          throw new Error('feat_name is required');
-        }
+        const featName = validateStringInput(args?.feat_name, 'feat_name');
 
         const feat = await open5eClient.getFeatDetails(featName);
         if (!feat) {
@@ -1475,10 +1461,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_condition_details': {
-        const conditionName = args?.condition_name as string;
-        if (!conditionName) {
-          throw new Error('condition_name is required');
-        }
+        const conditionName = validateStringInput(args?.condition_name, 'condition_name');
 
         const condition = await open5eClient.getConditionDetails(conditionName);
         if (!condition) {
@@ -1543,10 +1526,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_background_details': {
-        const backgroundName = args?.background_name as string;
-        if (!backgroundName) {
-          throw new Error('background_name is required');
-        }
+        const backgroundName = validateStringInput(args?.background_name, 'background_name');
 
         const background = await open5eClient.getBackgroundDetails(backgroundName);
         if (!background) {
@@ -1595,10 +1575,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_section_details': {
-        const sectionName = args?.section_name as string;
-        if (!sectionName) {
-          throw new Error('section_name is required');
-        }
+        const sectionName = validateStringInput(args?.section_name, 'section_name');
 
         const section = await open5eClient.getSectionDetails(sectionName);
         if (!section) {
@@ -1663,10 +1640,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_spell_list_details': {
-        const className = args?.class_name as string;
-        if (!className) {
-          throw new Error('class_name is required');
-        }
+        const className = validateStringInput(args?.class_name, 'class_name');
 
         const spellList = await open5eClient.getSpellListDetails(className);
         if (!spellList) {
@@ -1741,15 +1715,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('party_size, party_level, and difficulty are required');
         }
 
+        // The DMG XP thresholds only cover character levels 1-20.
+        const validDifficulties = ['easy', 'medium', 'hard', 'deadly'];
+        if (!validDifficulties.includes(difficulty as string)) {
+          throw new Error(`difficulty must be one of: ${validDifficulties.join(', ')}`);
+        }
+
         const options = {
-          partySize: party_size as number,
-          partyLevel: party_level as number,
+          partySize: validateNumberInput(party_size, 'party_size', 1, 12),
+          partyLevel: validateNumberInput(party_level, 'party_level', 1, 20),
           difficulty: difficulty as 'easy' | 'medium' | 'hard' | 'deadly',
           environment: environment as string | undefined,
-          minCR: min_cr as number | undefined,
-          maxCR: max_cr as number | undefined,
+          minCR: validateOptionalNumberInput(min_cr, 'min_cr', 0, 30),
+          maxCR: validateOptionalNumberInput(max_cr, 'max_cr', 0, 30),
           monsterTypes: monster_types as string[] | undefined,
-          maxMonsters: max_monsters as number | undefined
+          maxMonsters: validateOptionalNumberInput(max_monsters, 'max_monsters', 1, 30)
         };
 
         const encounter = await open5eClient.buildRandomEncounter(options);
@@ -1977,7 +1957,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_build_recommendations': {
-        const { existing_party, campaign_type, party_level, missing_roles } = args || {};
+        // NOTE: missing_roles is accepted by the schema but not yet used in scoring.
+        const { existing_party, campaign_type, party_level } = args || {};
 
         if (!existing_party || !campaign_type) {
           throw new Error('existing_party and campaign_type are required');

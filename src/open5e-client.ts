@@ -307,6 +307,37 @@ export class Open5eClient {
     });
   }
 
+  /**
+   * Open5e's filtering support is uneven, so name queries are routed per endpoint:
+   *  - `search=` does full-text matching on v1 (so "fireball" matches any spell
+   *    whose description mentions it) and is silently ignored on every v2 endpoint.
+   *  - `name__icontains=` filters correctly on most endpoints, but is also ignored
+   *    by /v2/armor/, /v2/weapons/ and /v2/conditions/.
+   * Those three collections are small (<100 rows), so we pull the full list and
+   * match on name locally instead.
+   */
+  private static readonly LOCAL_NAME_FILTER_PATHS = new Set([
+    '/v2/armor/', '/v2/weapons/', '/v2/conditions/'
+  ]);
+
+  /**
+   * Applies a name query to `params` for endpoints that filter server-side.
+   * Returns true when the caller must filter the response locally instead.
+   */
+  private applyNameQuery(path: string, params: Record<string, any>, query?: string): boolean {
+    if (!query) return false;
+    if (Open5eClient.LOCAL_NAME_FILTER_PATHS.has(path)) return true;
+    params.name__icontains = query;
+    return false;
+  }
+
+  /** Case-insensitive substring match on `name`, for endpoints that ignore filters. */
+  private filterByName<T extends { name?: string }>(rows: T[], query: string): T[] {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter(row => (row.name ?? '').toLowerCase().includes(needle));
+  }
+
   private async makeRequest<T>(path: string, params?: Record<string, any>): Promise<T> {
     // Input validation
     if (!path || typeof path !== 'string') {
@@ -320,7 +351,7 @@ export class Open5eClient {
     // Check cache first
     const cached = this.cache.get<T>(cacheKey);
     if (cached) {
-      console.log(`📦 Cache hit: ${cacheKey}`);
+      console.error(`📦 Cache hit: ${cacheKey}`);
       return cached;
     }
 
@@ -396,20 +427,25 @@ export class Open5eClient {
         return; // Skip null/undefined values
       }
 
-      // Type-specific validation
+      // Type-specific validation. An invalid value must throw rather than be
+      // dropped: a silently discarded filter turns a bad query into an
+      // unfiltered one, which returns the whole collection as if it matched.
       if (typeof value === 'string') {
         // Prevent injection attacks and validate length
         const sanitizedValue = value.trim().substring(0, 100);
         if (sanitizedValue.length > 0) {
           sanitized[key] = sanitizedValue;
         }
+        // An all-whitespace value means "no filter", which is a valid request.
       } else if (typeof value === 'number') {
-        // Validate numeric ranges
-        if (isFinite(value) && value >= 0 && value <= 1000) {
-          sanitized[key] = value;
+        if (!isFinite(value) || value < 0 || value > 1000) {
+          throw new Error(`Invalid value for ${key}: must be a number between 0 and 1000`);
         }
+        sanitized[key] = value;
       } else if (typeof value === 'boolean') {
         sanitized[key] = value;
+      } else {
+        throw new Error(`Invalid value for ${key}: expected a string, number or boolean`);
       }
     });
 
@@ -516,7 +552,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.level !== undefined) params.spell_level = options.level;
     if (options.school) params.school = options.school;
     if (options.limit) params.limit = options.limit;
@@ -586,7 +622,7 @@ export class Open5eClient {
 
   async getSpellsByClass(className: string): Promise<EnhancedSpellData[]> {
     // Use class filter directly in the API call when possible
-    let allSpells: EnhancedSpellData[] = [];
+    const allSpells: EnhancedSpellData[] = [];
     let hasMore = true;
     let page = 1;
     const limit = 50;
@@ -648,10 +684,10 @@ export class Open5eClient {
 
   async searchRaces(query?: string): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     params.limit = 10; // Reduced from 50 to avoid timeouts
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/races/', params);
+    const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', params);
 
     const transformedResults: EnhancedRaceData[] = response.results.map(race => {
       const traits = race.traits || [];
@@ -664,11 +700,11 @@ export class Open5eClient {
         abilityScoreIncrease: this.extractTraitValue(traits, 'ability score'),
         traits: traits.map((trait: any) => trait.name),
         description: race.desc || '',
-        url: race.url,
+        url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
         
         // Enhanced fields
-        isSubrace: race.is_subrace || false,
-        subraceOf: race.subrace_of,
+        isSubrace: race.is_subspecies || false,
+        subraceOf: race.subspecies_of,
         detailedTraits: traits,
         document: race.document
       };
@@ -774,7 +810,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.cr !== undefined) params.cr = options.cr;
     if (options.limit) params.limit = options.limit;
     if (options.documentSlug) params.document__slug = options.documentSlug;
@@ -833,10 +869,14 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: WeaponData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    const filterLocally = this.applyNameQuery('/v2/weapons/', params, query);
     if (options.isMartial !== undefined) params.is_martial = options.isMartial;
     if (options.isFinesse !== undefined) params.is_finesse = options.isFinesse;
-    if (options.limit) params.limit = options.limit;
+    if (filterLocally) {
+      params.limit = 100; // small collection: fetch it all, then match on name locally
+    } else if (options.limit) {
+      params.limit = options.limit;
+    }
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/weapons/', params);
 
@@ -858,10 +898,15 @@ export class Open5eClient {
       url: weapon.url
     }));
 
+    const matched = filterLocally && query
+      ? this.filterByName(transformedResults, query)
+      : transformedResults;
+    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
+
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      count: filterLocally ? matched.length : response.count,
+      results: limited,
+      hasMore: filterLocally ? limited.length < matched.length : !!response.next
     };
   }
 
@@ -882,7 +927,7 @@ export class Open5eClient {
 
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.rarity) params.rarity = options.rarity;
     if (options.type) params.type = options.type;
     if (options.requiresAttunement !== undefined) {
@@ -951,13 +996,17 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: ArmorData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    const filterLocally = this.applyNameQuery('/v2/armor/', params, query);
     if (options.category) params.category = options.category;
     if (options.acBase !== undefined) params.ac_base = options.acBase;
     if (options.stealthDisadvantage !== undefined) {
       params.grants_stealth_disadvantage = options.stealthDisadvantage;
     }
-    if (options.limit) params.limit = options.limit;
+    if (filterLocally) {
+      params.limit = 100; // small collection: fetch it all, then match on name locally
+    } else if (options.limit) {
+      params.limit = options.limit;
+    }
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/armor/', params);
 
@@ -974,10 +1023,15 @@ export class Open5eClient {
       url: armor.url
     }));
 
+    const matched = filterLocally && query
+      ? this.filterByName(transformedResults, query)
+      : transformedResults;
+    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
+
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      count: filterLocally ? matched.length : response.count,
+      results: limited,
+      hasMore: filterLocally ? limited.length < matched.length : !!response.next
     };
   }
 
@@ -1005,7 +1059,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: FeatData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.hasPrerequisite !== undefined) {
       params.has_prerequisite = options.hasPrerequisite;
     }
@@ -1053,8 +1107,12 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: ConditionData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
-    if (options.limit) params.limit = options.limit;
+    const filterLocally = this.applyNameQuery('/v2/conditions/', params, query);
+    if (filterLocally) {
+      params.limit = 100; // small collection: fetch it all, then match on name locally
+    } else if (options.limit) {
+      params.limit = options.limit;
+    }
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/conditions/', params);
 
@@ -1065,10 +1123,15 @@ export class Open5eClient {
       url: condition.url
     }));
 
+    const matched = filterLocally && query
+      ? this.filterByName(transformedResults, query)
+      : transformedResults;
+    const limited = filterLocally && options.limit ? matched.slice(0, options.limit) : matched;
+
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      count: filterLocally ? matched.length : response.count,
+      results: limited,
+      hasMore: filterLocally ? limited.length < matched.length : !!response.next
     };
   }
 
@@ -1101,7 +1164,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: BackgroundData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.limit) params.limit = options.limit;
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/backgrounds/', params);
@@ -1170,7 +1233,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: SectionData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.search = query;  // full-text: sections are rules prose, not just titles
     if (options.limit) params.limit = options.limit;
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v1/sections/', params);
@@ -1225,7 +1288,7 @@ export class Open5eClient {
   } = {}): Promise<{ count: number; results: SpellListData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     
-    if (query) params.search = query;
+    if (query) params.name__icontains = query;
     if (options.limit) params.limit = options.limit;
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v1/spelllist/', params);
@@ -1311,7 +1374,8 @@ export class Open5eClient {
     '6': 2300, '7': 2900, '8': 3900, '9': 5000, '10': 5900,
     '11': 7200, '12': 8400, '13': 10000, '14': 11500, '15': 13000,
     '16': 15000, '17': 18000, '18': 20000, '19': 22000, '20': 25000,
-    '21': 33000, '22': 41000, '23': 50000, '24': 62000, '30': 155000
+    '21': 33000, '22': 41000, '23': 50000, '24': 62000, '25': 75000,
+    '26': 90000, '27': 105000, '28': 120000, '29': 135000, '30': 155000
   };
 
   private readonly ENCOUNTER_THRESHOLDS: Record<number, Record<string, number>> = {
@@ -1337,9 +1401,11 @@ export class Open5eClient {
     20: { easy: 2800, medium: 5700, hard: 8500, deadly: 12700 }
   };
 
+  // DMG p.82 encounter multipliers, keyed by number of monsters:
+  // 1 -> x1, 2 -> x1.5, 3-6 -> x2, 7-10 -> x2.5, 11-14 -> x3, 15+ -> x4.
   private readonly XP_MULTIPLIERS: Record<number, number> = {
-    1: 1, 2: 1.5, 3: 2, 4: 2, 5: 2.5, 6: 2.5, 7: 3,
-    8: 3, 9: 3.5, 10: 3.5, 11: 4, 12: 4, 13: 4.5, 14: 4.5, 15: 5
+    1: 1, 2: 1.5, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2.5,
+    8: 2.5, 9: 2.5, 10: 2.5, 11: 3, 12: 3, 13: 3, 14: 3, 15: 4
   };
 
   async buildRandomEncounter(options: EncounterBuilderOptions): Promise<EncounterData> {
@@ -1367,7 +1433,7 @@ export class Open5eClient {
     // Calculate XP values
     const totalXP = encounterMonsters.reduce((sum, em) => sum + em.totalXP, 0);
     const monsterCount = encounterMonsters.reduce((sum, em) => sum + em.count, 0);
-    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] || 5;
+    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] ?? 1;
     const adjustedXP = Math.floor(totalXP * multiplier);
     
     // Generate encounter data
@@ -1575,7 +1641,7 @@ export class Open5eClient {
   async getEncounterDifficulty(partySize: number, partyLevel: number, monsters: EncounterMonster[]): Promise<string> {
     const totalXP = monsters.reduce((sum, em) => sum + em.totalXP, 0);
     const monsterCount = monsters.reduce((sum, em) => sum + em.count, 0);
-    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] || 5;
+    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] ?? 1;
     const adjustedXP = Math.floor(totalXP * multiplier);
     
     const thresholds = this.ENCOUNTER_THRESHOLDS[Math.min(partyLevel, 20)];
@@ -1605,7 +1671,9 @@ export class Open5eClient {
       campaignType = 'mixed',
       experienceLevel = 'intermediate',
       focusLevel = 5,
-      allowMulticlass = false,
+      // NOTE: accepted and advertised by generate_character_build but not yet
+      // honoured -- multiclass builds are not generated. See ROADMAP.
+      allowMulticlass: _allowMulticlass = false,
       preferredAbilityScores
     } = options;
 
@@ -1769,7 +1837,8 @@ export class Open5eClient {
     race: EnhancedRaceData,
     cls: EnhancedClassData,
     playstyle?: string,
-    level?: number
+    // NOTE: feat scoring does not yet weight character level.
+    _level?: number
   ): Promise<FeatData[]> {
     // Score feats based on race/class synergy and playstyle
     const scoredFeats = feats.map(feat => ({
@@ -1847,12 +1916,12 @@ export class Open5eClient {
     cls: EnhancedClassData,
     playstyle?: string,
     campaignType?: string,
-    race?: EnhancedRaceData
+    // NOTE: race synergy is not yet part of this score.
+    _race?: EnhancedRaceData
   ): number {
     let score = 0;
     
     const className = cls.name.toLowerCase();
-    const classDesc = cls.description.toLowerCase();
 
     // Base playstyle scoring
     switch (playstyle) {
@@ -1905,7 +1974,6 @@ export class Open5eClient {
 
     const bgName = background.name.toLowerCase();
     const className = cls.name.toLowerCase();
-    const skillProfs = background.skillProficiencies.toLowerCase();
 
     // Class-specific synergies
     if (className.includes('cleric') && bgName.includes('acolyte')) score += 3;
@@ -2016,7 +2084,8 @@ export class Open5eClient {
     return `A ${race.name} ${cls.name} with a ${background.name} background, ${descriptions[playstyle as keyof typeof descriptions] || 'adaptable to various challenges'}. This build combines the ${race.name}'s natural abilities with the ${cls.name}'s class features for optimal ${playstyle} performance.`;
   }
 
-  private getAbilityScorePriority(cls: EnhancedClassData, playstyle: string): string[] {
+  // NOTE: priorities are class-driven only; playstyle is not yet applied.
+  private getAbilityScorePriority(cls: EnhancedClassData, _playstyle: string): string[] {
     const className = cls.name.toLowerCase();
     
     // Class-based priorities
@@ -2196,6 +2265,6 @@ export class Open5eClient {
 
   clearCache(): void {
     this.cache.flushAll();
-    console.log('🗑️ Open5e cache cleared');
+    console.error('🗑️ Open5e cache cleared');
   }
 }

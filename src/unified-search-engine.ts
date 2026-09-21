@@ -93,7 +93,7 @@ export class UnifiedSearchEngine {
     const cacheKey = this.generateCacheKey(normalizedOptions);
     const cached = this.cache.get<UnifiedSearchResult>(cacheKey);
     if (cached) {
-      console.log(`🔄 Unified search cache hit: ${cacheKey}`);
+      console.error(`🔄 Unified search cache hit: ${cacheKey}`);
       return cached;
     }
     
@@ -121,7 +121,7 @@ export class UnifiedSearchEngine {
       
       // Cache the result
       this.cache.set(cacheKey, result);
-      console.log(`💾 Unified search cached: ${cacheKey} (${result.totalResults} results in ${result.executionTime}ms)`);
+      console.error(`💾 Unified search cached: ${cacheKey} (${result.totalResults} results in ${result.executionTime}ms)`);
       
       return result;
       
@@ -671,7 +671,7 @@ export class UnifiedSearchEngine {
    */
   private initializeFuzzySearch(): void {
     // Configuration will be expanded in Phase 2
-    console.log('🔍 Fuzzy search configurations initialized');
+    console.error('🔍 Fuzzy search configurations initialized');
   }
 
   /**
@@ -686,6 +686,9 @@ export class UnifiedSearchEngine {
    */
   public clearCache(): void {
     this.cache.flushAll();
-    console.log('🗑️ Unified search cache cleared');
+    // The engine's own cache sits on top of the client's HTTP cache, so both
+    // have to go or a "cleared" cache still serves stale upstream responses.
+    this.open5eClient.clearCache();
+    console.error('🗑️ Unified search cache cleared');
   }
 }
