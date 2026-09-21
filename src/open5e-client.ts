@@ -528,14 +528,6 @@ export class Open5eClient {
     return classes;
   }
 
-  private extractTraitValue(traits: any[], traitName: string, defaultValue: string = ''): string {
-    const trait = traits?.find(t => 
-      t.name.toLowerCase().includes(traitName.toLowerCase()) ||
-      t.desc.toLowerCase().includes(traitName.toLowerCase())
-    );
-    return trait ? trait.desc : defaultValue;
-  }
-
   private extractPrimaryAbilities(classData: any): string[] {
     // Extract from saving throws as primary indicator
     if (classData.prof_saving_throws) {
@@ -682,50 +674,124 @@ export class Open5eClient {
     return filteredSpells.slice(0, 20); // Limit to 20 results for performance
   }
 
-  async searchRaces(query?: string): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
+  async searchRaces(query?: string, limit: number = 10): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
     const params: Record<string, any> = {};
     if (query) params.name__icontains = query;
-    params.limit = 10; // Reduced from 50 to avoid timeouts
+    params.limit = limit; // Kept small by default to avoid timeouts
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', params);
 
-    const transformedResults: EnhancedRaceData[] = response.results.map(race => {
-      const traits = race.traits || [];
-      
-      return {
-        // Current MCP format fields
-        name: race.name,
-        size: this.extractTraitValue(traits, 'size', 'Medium'),
-        speed: this.extractTraitValue(traits, 'speed', '30 feet'),
-        abilityScoreIncrease: this.extractTraitValue(traits, 'ability score'),
-        traits: traits.map((trait: any) => trait.name),
-        description: race.desc || '',
-        url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
-        
-        // Enhanced fields
-        isSubrace: race.is_subspecies || false,
-        subraceOf: race.subspecies_of,
-        detailedTraits: traits,
-        document: race.document
-      };
-    });
-
     return {
       count: response.count,
-      results: transformedResults,
+      results: response.results.map(race => this.transformRace(race)),
       hasMore: !!response.next
     };
   }
 
+  private transformRace(race: any): EnhancedRaceData {
+    const traits = race.traits || [];
+
+    return {
+      // Current MCP format fields
+      name: race.name,
+      // Subspecies usually omit size and speed because they inherit them from
+      // the parent species. Leave them blank rather than guess; getRaceDetails
+      // fills them in from the parent.
+      size: this.findSpeciesTrait(traits, 'size'),
+      speed: this.findSpeciesTrait(traits, 'speed'),
+      abilityScoreIncrease: this.findSpeciesTrait(traits, 'ability score increase'),
+      traits: traits.map((trait: any) => trait.name),
+      description: race.desc || '',
+      url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
+
+      // Enhanced fields
+      isSubrace: race.is_subspecies || false,
+      subraceOf: race.subspecies_of,
+      detailedTraits: traits,
+      document: race.document
+    };
+  }
+
+  /**
+   * Species traits are free text. Match on the trait's name (or its v2 `type`,
+   * e.g. SIZE/SPEED on srd-2024) -- never its description, which mentions
+   * "size" and "speed" in unrelated traits such as Halfling Nimbleness.
+   */
+  private findSpeciesTrait(traits: any[], traitName: string): string {
+    const wanted = traitName.toLowerCase();
+    const trait = traits.find(t => (t.name ?? '').toLowerCase() === wanted)
+      ?? traits.find(t => (t.type ?? '').toLowerCase() === wanted);
+    return trait?.desc ?? '';
+  }
+
+  /**
+   * Open5e holds several species with the same name ("Halfling" in both
+   * srd-2014 and srd-2024), plus subspecies and third-party entries whose names
+   * contain it ("Stoor Halfling", "Halfling Heritage"). Rank so that a lookup
+   * for "halfling" returns the core SRD species, not whichever row came first.
+   */
+  private static readonly SPECIES_DOCUMENT_PRIORITY = ['srd-2014', 'srd', 'srd-2024'];
+
+  private rankSpecies(race: EnhancedRaceData, needle: string): number[] {
+    const docKey = (race.document as any)?.key ?? '';
+    const docRank = Open5eClient.SPECIES_DOCUMENT_PRIORITY.indexOf(docKey);
+    return [
+      race.name.toLowerCase() === needle ? 0 : 1,
+      race.isSubrace ? 1 : 0,
+      docRank === -1 ? Open5eClient.SPECIES_DOCUMENT_PRIORITY.length : docRank,
+      race.name.length
+    ];
+  }
+
   async getRaceDetails(raceName: string): Promise<EnhancedRaceData | null> {
-    const searchResults = await this.searchRaces(raceName);
-    
-    // Find exact or close match
-    const match = searchResults.results.find(
-      race => race.name.toLowerCase().includes(raceName.toLowerCase())
-    );
-    
-    return match || null;
+    const needle = raceName.trim().toLowerCase();
+    if (!needle) return null;
+
+    // Species keys ("srd_halfling") are not names, so fetch those directly.
+    if (/^[a-z0-9-]+_[a-z0-9-]+$/.test(needle)) {
+      try {
+        const race = await this.makeRequest<any>(`/v2/species/${needle}/`);
+        return this.inheritFromParentSpecies(this.transformRace(race));
+      } catch {
+        // Not a key after all; fall back to a name search.
+      }
+    }
+
+    // Fetch enough rows that the exact match cannot be crowded out by
+    // longer names containing the query.
+    const { results } = await this.searchRaces(raceName.trim(), 50);
+    const candidates = results.filter(race => race.name.toLowerCase().includes(needle));
+    if (candidates.length === 0) return null;
+
+    const ranked = candidates
+      .map(race => ({ race, rank: this.rankSpecies(race, needle) }))
+      .sort((a, b) => {
+        for (let i = 0; i < a.rank.length; i++) {
+          if (a.rank[i] !== b.rank[i]) return a.rank[i] - b.rank[i];
+        }
+        return 0;
+      });
+
+    return this.inheritFromParentSpecies(ranked[0].race);
+  }
+
+  /** Fills in size and speed a subspecies inherits from its parent species. */
+  private async inheritFromParentSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData> {
+    if (!race.isSubrace || !race.subraceOf || (race.size && race.speed)) return race;
+
+    try {
+      const parent = this.transformRace(
+        await this.makeRequest<any>(`/v2/species/${race.subraceOf}/`)
+      );
+      return {
+        ...race,
+        size: race.size || parent.size,
+        speed: race.speed || parent.speed
+      };
+    } catch (error) {
+      console.error(`Could not load parent species ${race.subraceOf}:`, error);
+      return race;
+    }
   }
 
   async searchClasses(): Promise<{ count: number; results: EnhancedClassData[]; hasMore: boolean }> {
