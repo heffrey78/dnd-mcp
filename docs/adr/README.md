@@ -7,4 +7,5 @@
 | [003](003-rate-limiting-approach.md) | Rate limiting approach | Superseded by 006 |
 | [004](004-content-quality-management.md) | Content quality management | Partially superseded by 006 |
 | [005](005-mcp-api-structure.md) | MCP API structure and tool design | Accepted |
-| [006](006-open5e-api-migration.md) | Open5e API as the content source | Accepted |
+| [006](006-open5e-api-migration.md) | Open5e API as the content source | Accepted; decisions 2-3 superseded by 007 |
+| [007](007-v2-registry-scope-and-builds.md) | v2 only, a filter registry, source scopes, and a rules-based build engine | Accepted |

@@ -1,7 +1,9 @@
 # ADR-006: Open5e API as the content source
 
 ## Status
-Accepted
+Accepted. Decisions 2 and 3 are superseded by
+[ADR-007](007-v2-registry-scope-and-builds.md): the client is now v2 only and
+routes every filter through a verified registry.
 
 ## Context
 

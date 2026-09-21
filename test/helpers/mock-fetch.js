@@ -84,7 +84,7 @@ export function withLookups(responder) {
   return url => (url.pathname in LOOKUPS ? page(LOOKUPS[url.pathname]) : responder(url));
 }
 
-/** The requests made to one path, ignoring lookup and document fetches. */
+/** The requests made to one path -- lets a test look past lookup and document fetches. */
 export function callsTo(mock, pathname) {
   return mock.calls.filter(url => url.pathname === pathname);
 }

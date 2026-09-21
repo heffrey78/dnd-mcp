@@ -126,7 +126,8 @@ describe('Open5e v2 row shapes', () => {
   // Known gaps in Open5e's data that the client reports rather than papers
   // over. When one of these fails, the gap has been fixed upstream.
   test('known gap: no 2014 SRD spell lists the Paladin', async () => {
-    const body = await get('/v2/spells/?classes__key=srd_paladin&limit=1');
-    assert.equal(body.count, 0, 'srd_paladin now has spells; builds will suggest them automatically');
+    // Third-party books do list srd_paladin; the 2014 SRD itself does not.
+    const body = await get('/v2/spells/?classes__key=srd_paladin&document__key__in=srd-2014&limit=1');
+    assert.equal(body.count, 0, 'SRD spells now list the Paladin; builds will suggest them automatically');
   });
 });

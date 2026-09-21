@@ -3,7 +3,7 @@
 An [MCP](https://modelcontextprotocol.io) server that gives AI assistants access
 to D&D 5th Edition content from the [Open5e](https://open5e.com) API: spells,
 monsters, classes, species, equipment, rules references, plus encounter-building
-and character-build helpers.
+and character-build helpers. It uses Open5e's v2 API.
 
 ## Requirements
 
@@ -48,6 +48,17 @@ printf '%s\n' \
 
 ## Tools
 
+Every tool except `get_api_stats` also takes two optional arguments that
+restrict it to some sourcebooks:
+
+- `ruleset`: `"5e-2014"`, `"5e-2024"` or `"a5e"`;
+- `sources`: Open5e document keys, e.g. `["srd-2014", "toh"]`.
+
+Without them, searches cover every source Open5e serves. Each result carries
+a `source` label (document key, title and ruleset), and lookups by name
+prefer the 2014 SRD, then the 2024 SRD. Character builds default to the 2014
+SRD only. An unknown ruleset or document is an error.
+
 ### Universal search
 
 | Tool | Description | Required |
@@ -58,38 +69,34 @@ printf '%s\n' \
 
 | Tool | Description | Required |
 |------|-------------|----------|
-| `search_spells` | Search for D&D 5E spells with advanced filtering options | - |
+| `search_spells` | Search spells by name, level, school or class list | - |
 | `get_spell_details` | Get detailed information about a specific D&D 5E spell | `spell_name` |
 | `get_spell_by_level` | Get all spells of a specific level | `level` |
-| `get_spells_by_class` | Get all spells available to a specific class | `class_name` |
-| `search_spell_lists` | Search available D&D 5E spell lists by class | - |
-| `get_spell_list_details` | Get detailed spell list information for a specific D&D 5E class | `class_name` |
-| `get_all_spell_lists` | Get all available D&D 5E spell lists for quick reference | - |
-| `get_spells_for_class` | Get detailed spell information for all spells available to a specific class | `class_name` |
+| `get_spells_by_class` | Get the spells on a class's spell list, lowest level first; filter by `level` or `max_level` | `class_name` |
 
 ### Classes and species
 
 | Tool | Description | Required |
 |------|-------------|----------|
-| `search_classes` | Get all D&D 5E classes with comprehensive details | - |
-| `get_class_details` | Get detailed information about a specific D&D 5E class | `class_name` |
-| `search_races` | Search for D&D 5E races with detailed trait information | - |
-| `get_race_details` | Get detailed information about a specific D&D 5E race | `race_name` |
+| `search_classes` | List D&D 5E base classes with their features and subclass names | - |
+| `get_class_details` | Get a class: hit die, proficiencies, features by level, spell slots and subclasses with their features | `class_name` |
+| `search_races` | Search species, including subspecies whose names omit the parent (Lightfoot for Halfling) | - |
+| `get_race_details` | Get a species with what it inherits resolved: size, speed, combined ability increases, parent traits | `race_name` |
 
 ### Monsters
 
 | Tool | Description | Required |
 |------|-------------|----------|
-| `search_monsters` | Search for D&D 5E monsters with filtering options | - |
+| `search_monsters` | Search monsters by name, challenge rating, type or environment | - |
 | `get_monsters_by_cr` | Get monsters by challenge rating | `challenge_rating` |
-| `get_monsters_by_cr_range` | Get all monsters within a specific challenge rating range for encounter planning | `min_cr, max_cr` |
+| `get_monsters_by_cr_range` | Get monsters within a challenge rating range, optionally by environment and type | `min_cr, max_cr` |
 
 ### Equipment and items
 
 | Tool | Description | Required |
 |------|-------------|----------|
 | `search_weapons` | Search for D&D 5E weapons with property filtering | - |
-| `search_magic_items` | Search for D&D 5E magic items with filtering options | - |
+| `search_magic_items` | Search magic items by name, rarity, category or attunement | - |
 | `get_magic_item_details` | Get detailed information about a specific D&D 5E magic item | `item_name` |
 | `search_armor` | Search for D&D 5E armor with filtering options | - |
 | `get_armor_details` | Get detailed information about a specific D&D 5E armor | `armor_name` |
@@ -108,24 +115,24 @@ printf '%s\n' \
 | Tool | Description | Required |
 |------|-------------|----------|
 | `search_conditions` | Search for D&D 5E conditions and status effects | - |
-| `get_condition_details` | Get detailed information about a specific D&D 5E condition | `condition_name` |
+| `get_condition_details` | Get a condition, with its wording for the requested ruleset | `condition_name` |
 | `get_all_conditions` | Get all D&D 5E conditions for quick reference | - |
-| `search_sections` | Search D&D 5E rules sections for quick rule lookups | - |
-| `get_section_details` | Get detailed information about a specific D&D 5E rules section | `section_name` |
-| `get_all_sections` | Get all available D&D 5E rules sections for quick reference | - |
+| `search_sections` | Search rules sections by name or text | - |
+| `get_section_details` | Get a rules section by name or key | `section_name` |
+| `get_all_sections` | List every rules section by name, key and chapter, without the text | - |
 
 ### DM tools
 
 | Tool | Description | Required |
 |------|-------------|----------|
-| `build_encounter` | Build a balanced D&D 5E encounter using monsters by CR for specified party | `party_size, party_level, difficulty` |
+| `build_encounter` | Build a balanced encounter for a party, sampling monsters from the whole CR range | `party_size, party_level, difficulty` |
 | `calculate_encounter_difficulty` | Calculate the difficulty of a custom encounter with specific monsters | `party_size, party_level, monsters` |
 
 ### Player tools
 
 | Tool | Description | Required |
 |------|-------------|----------|
-| `generate_character_build` | Generate an optimized character build combining race, class, background, and feats | - |
+| `generate_character_build` | Generate a build: species, class and subclass, background, ability scores, hit points, spells, feats and a level-by-level plan | - |
 | `compare_character_builds` | Generate and compare multiple character builds with different options | `build_options` |
 | `get_build_recommendations` | Get character build recommendations based on party composition and campaign needs | `existing_party, campaign_type` |
 
@@ -134,6 +141,7 @@ printf '%s\n' \
 | Tool | Description | Required |
 |------|-------------|----------|
 | `get_api_stats` | Get API performance and caching statistics | - |
+
 ## Development
 
 ```bash
@@ -151,18 +159,23 @@ process. See [docs/testing.md](docs/testing.md).
 
 ## Known quirks
 
-- **Duplicate results.** Open5e serves several sourcebooks, so a search for
-  `fireball` returns more than one "Fireball" row. The server does not
-  deduplicate.
-- **Uneven upstream filtering.** Some Open5e endpoints ignore filter parameters
-  and return the whole collection. The client works around this per endpoint;
-  see [docs/api-filters.md](docs/api-filters.md).
-- **`unified_search` count vs items.** For `classes` and `sections` the reported
-  `count` can exceed the number of returned items, because those two are not
-  filtered server-side before ranking.
-- **Unimplemented build options.** `generate_character_build` accepts
-  `allow_multiclass`, and `get_build_recommendations` accepts `missing_roles`,
-  but neither yet affects the result.
+- **Duplicate names across books.** A search for `fireball` returns every
+  sourcebook's Fireball, each labelled with its `source`. Detail lookups pick
+  one (2014 SRD first); pass `ruleset` or `sources` to choose another.
+- **Uneven upstream filtering.** Open5e ignores many filter parameters and
+  returns the whole collection. The client sends only verified parameters and
+  matches the rest locally; see [docs/api-filters.md](docs/api-filters.md).
+- **Gaps in Open5e's data** are reported, not guessed. Examples: no 2014 SRD
+  spell lists the Paladin, and some Tome of Heroes heritages have no source
+  for their size. Look in a build's `warnings` or a species'
+  `resolved.unresolved`.
+- **Builds are opinionated.** Game rules (spell slots, hit points, ASIs) come
+  from the SRD, but the scoring choices that pick a class, species or spell
+  are judgment calls, collected in `src/character-build/heuristics.ts`.
+  Multiclass builds are not supported; `allow_multiclass: true` is rejected.
+- **`unified_search` count vs items.** For `classes` the reported `count` can
+  exceed the number of returned items, because classes are listed whole and
+  then ranked against the query.
 
 ## Documentation
 
@@ -176,5 +189,5 @@ process. See [docs/testing.md](docs/testing.md).
 
 Content comes from the Open5e API, which serves material published under the
 OGL and Creative Commons licences. This server is MIT licensed; the game
-content it returns is governed by its own licences, exposed per item in the
-`document` field.
+content it returns is governed by its own licences. Each item's `source`
+names the document it comes from.
