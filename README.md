@@ -62,7 +62,9 @@ SRD only (see [ADR-008](docs/adr/008-default-to-2024.md)); pass
 unknown ruleset or document is an error. A build that mixes editions, e.g.
 `sources: ["srd-2024", "open5e"]`, uses 2014 species and backgrounds the way
 the 2024 Player's Handbook allows: the species keeps its traits, and ability
-increases come from the background.
+increases come from the background. To add backgrounds without adding
+anything else, pass `background_sources` to `generate_character_build`, e.g.
+`background_sources: ["toh"]` for Tome of Heroes' 19 backgrounds.
 
 ### Universal search
 

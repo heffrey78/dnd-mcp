@@ -118,6 +118,14 @@ const backgrounds = [
     { type: 'ability_score', name: 'Ability Scores', desc: 'Strength, Dexterity, Constitution' },
     { type: 'feat', name: 'Feat', desc: 'Savage Attacker' },
     { type: 'skill_proficiency', name: 'Skill Proficiencies', desc: 'Athletics and Intimidation' }
+  ] },
+  { key: 'toh_northern-minstrel', name: 'Northern Minstrel', document: toh, benefits: [
+    { type: 'skill_proficiency', name: 'Skill Proficiencies', desc: 'Perception, Performance' },
+    { type: 'feature', name: 'Northern Historian', desc: 'You know who built the ruins.' }
+  ] },
+  { key: 'toh_desert-runner', name: 'Desert Runner', document: toh, benefits: [
+    { type: 'skill_proficiency', name: 'Skill Proficiencies', desc: 'Athletics, Survival' },
+    { type: 'feature', name: 'Nomad', desc: 'You find water.' }
   ] }
 ];
 
@@ -129,6 +137,10 @@ const feats = [
     prerequisite: '', desc: 'You gain a bonus to initiative.', benefits: [] },
   { key: 'srd-2024_savage-attacker', name: 'Savage Attacker', document: srd24, type: 'Origin', has_prerequisite: false,
     prerequisite: '', desc: 'Roll damage twice.', benefits: [] },
+  { key: 'srd-2024_magic-initiate', name: 'Magic Initiate', document: srd24, type: 'Origin', has_prerequisite: false,
+    prerequisite: '', desc: 'You learn two cantrips and a level 1 spell.', benefits: [] },
+  { key: 'toh_boon-of-the-north', name: 'Boon of the North', document: toh, type: 'Origin', has_prerequisite: false,
+    prerequisite: '', desc: 'A Tome of Heroes Origin feat.', benefits: [] },
   { key: 'a5e-ag_ace-driver', name: 'Ace Driver', document: a5e, type: 'GENERAL', has_prerequisite: true,
     prerequisite: 'Proficiency with a type of vehicle', desc: 'You drive well and deal damage.', benefits: [] }
 ];
@@ -343,6 +355,55 @@ describe('character builds', () => {
     assert.ok(build.levelProgression[0].choices.includes('Origin feat from Acolyte: Alert'),
       'a tank prefers Alert (ORIGIN_FEAT_PREFERENCE)');
     assert.ok(build.notes.some(n => /Acolyte is a 2014 background in a 2024 build/.test(n)));
+  });
+
+  test('background_sources widens the backgrounds and nothing else', async () => {
+    const build = await builder().build({
+      preferredClass: 'fighter', preferredRace: 'halfling', playstyle: 'support', campaignType: 'roleplay',
+      backgroundSources: ['toh']
+    });
+
+    assert.equal(build.background.key, 'toh_northern-minstrel', 'a roleplay theme, and any ability may rise');
+    assert.equal(build.race.key, 'srd-2024_halfling');
+    assert.deepEqual(build.sources.map(s => s.key).sort(), ['srd-2024', 'toh']);
+    assert.ok(!build.levelProgression[0].choices.some(c => /Boon of the North/.test(c)),
+      'the Origin feat comes from the build\'s sources, not the background\'s');
+  });
+
+  test('background_sources leaves species in the build\'s sources', async () => {
+    await assert.rejects(
+      builder().build({ preferredRace: 'darakhul', backgroundSources: ['toh'] }),
+      /Species "darakhul" is not in sources srd-2024/);
+  });
+
+  test('an unknown background source is rejected, not ignored', async () => {
+    await assert.rejects(builder().build({ backgroundSources: ['nope'] }), /Unknown source document\(s\): nope/);
+  });
+
+  test('a background outside the sources points at background_sources', async () => {
+    await assert.rejects(
+      builder().build({ preferredClass: 'fighter', preferredBackground: 'northern minstrel' }),
+      /Northern Minstrel is in Tome of Heroes \(toh\)\. Pass background_sources to include it/);
+  });
+
+  test('backgrounds that fit equally are named in a note', async () => {
+    const build = await builder().build({ preferredClass: 'fighter', playstyle: 'tank', backgroundSources: ['toh'] });
+
+    assert.equal(build.background.name, 'Soldier', 'ties go to the SRD, then by name');
+    assert.ok(build.notes.some(n => /^3 backgrounds fit this build equally well; chose Soldier/.test(n)));
+  });
+
+  test('Magic Initiate from a 2014 background names its spell list and ability', async () => {
+    const build = await builder().build({
+      preferredClass: 'fighter', playstyle: 'support', preferredBackground: 'northern minstrel', backgroundSources: ['toh']
+    });
+    const { atLevel } = build.abilityScores;
+    const best = ['intelligence', 'wisdom', 'charisma'].reduce((a, b) => (atLevel[b] > atLevel[a] ? b : a));
+    const expected = best[0].toUpperCase() + best.slice(1);
+
+    assert.ok(build.levelProgression[0].choices.includes(
+      `Origin feat from Northern Minstrel: Magic Initiate (Cleric, casting with ${expected})`),
+    'support prefers Magic Initiate, from the Cleric list; a Fighter casts with its best mental ability');
   });
 
   test('a 2024 species in a 2014 build is flagged: neither gives it increases', async () => {

@@ -24,6 +24,11 @@ export interface CharacterBuildOptions {
   preferredAbilityScores?: Ability[];
   /** Sources to build from. Default: the 2024 SRD only. */
   scope?: ContentScope;
+  /**
+   * More Open5e documents to draw backgrounds from, on top of `scope`. Only
+   * the background widens; species, feats and spells stay in `scope`.
+   */
+  backgroundSources?: string[];
 }
 
 export type AbilityScores = Record<Ability, number>;

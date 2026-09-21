@@ -77,6 +77,11 @@ describe('tool input validation', () => {
     assertRejected(response, /party_level must be between 1 and 20/i);
   });
 
+  test('background_sources must be an array of document keys', async () => {
+    const response = await server.callTool('generate_character_build', { background_sources: 'toh' });
+    assertRejected(response, /background_sources must be an array of strings/);
+  });
+
   test('the server stays usable after a rejected call', async () => {
     await server.callTool('get_spell_by_level', { level: 99 });
     const { result } = await server.listTools();

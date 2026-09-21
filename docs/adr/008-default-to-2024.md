@@ -51,7 +51,9 @@ Open5e's variety.
      ability score increases, which come from the background instead;
    - a 2014 background raises any one ability by 2 and another by 1, and
      grants an Origin feat from the scope, chosen by
-     `ORIGIN_FEAT_PREFERENCE` in `heuristics.ts`;
+     `ORIGIN_FEAT_PREFERENCE` in `heuristics.ts`. Magic Initiate names its
+     spell list (`magicInitiateList`, never the class's own) and its
+     spellcasting ability (the class's, else the best mental score);
    - 2014 feats are General feats, never Origin feats.
 
    Each conversion is stated in the build's `notes`. The rule is not in
@@ -71,6 +73,13 @@ Open5e's variety.
   (Stoor Halfling, Darakhul…) and backgrounds into 2024 builds. With species
   increases gone, many species tie for a class; the build notes the tie and
   picks by source rank.
+- To widen only the backgrounds, `generate_character_build` takes
+  `background_sources` (e.g. `["toh"]`, 19 backgrounds): backgrounds come
+  from the scope plus those documents, while species, feats (including the
+  Origin feat) and spells stay in the scope. Every 2014 background can raise
+  any ability, so they tie on fit; the campaign theme
+  (`BACKGROUND_THEMES`) breaks ties, then source rank, and the build notes
+  the tie.
 - Callers that relied on the 2014 answer to an unscoped lookup (e.g.
   `get_class_details` for "bard") now get the 2024 row; pass
   `ruleset: "5e-2014"` to get the old one.

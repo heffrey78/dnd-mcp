@@ -198,3 +198,32 @@ export const ORIGIN_FEAT_PREFERENCE: Readonly<Record<Playstyle, readonly string[
   utility: ['Skilled', 'Magic Initiate', 'Alert', 'Savage Attacker'],
   balanced: ['Alert', 'Skilled', 'Magic Initiate', 'Savage Attacker']
 };
+
+/**
+ * Which spell list a Magic Initiate taken through a 2014 background uses,
+ * best first. The class's own list is skipped (magicInitiateList): the feat
+ * adds more to a character when it opens a list they don't already have.
+ */
+export const MAGIC_INITIATE_LIST_PREFERENCE: Readonly<Record<Playstyle, readonly string[]>> = {
+  damage: ['Wizard', 'Druid', 'Cleric'],
+  support: ['Cleric', 'Druid', 'Wizard'],
+  tank: ['Cleric', 'Druid', 'Wizard'],
+  utility: ['Wizard', 'Druid', 'Cleric'],
+  balanced: ['Cleric', 'Wizard', 'Druid']
+};
+
+/** The Magic Initiate spell list for a class and playstyle: the first preference that isn't the class's own. */
+export function magicInitiateList(className: string, playstyle: Playstyle): string {
+  const lists = MAGIC_INITIATE_LIST_PREFERENCE[playstyle];
+  return lists.find(list => list.toLowerCase() !== className.toLowerCase()) ?? lists[0];
+}
+
+/**
+ * Background names that suit a campaign's emphasis: the SRD and A5E names,
+ * and those in Tome of Heroes (toh) and other Open5e books.
+ */
+export const BACKGROUND_THEMES: Readonly<Record<Exclude<CampaignType, 'mixed'>, RegExp>> = {
+  combat: /soldier|gladiator|mercenary|guard|knight|sentry|marauder|freebooter|trophy hunter/i,
+  roleplay: /noble|entertainer|charlatan|acolyte|courtier|guild|diplomat|court servant|innkeeper|minstrel|con artist|gambler|trader/i,
+  exploration: /outlander|sage|folk hero|hermit|wayfarer|sailor|guide|desert runner|forest dweller|gamekeeper|former adventurer|deep hunter/i
+};

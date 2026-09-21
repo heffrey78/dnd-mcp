@@ -19,9 +19,9 @@ import {
   modifiers, planImprovements, priorityOrder
 } from './abilities.js';
 import {
-  ABILITY_FILL_ORDER, EITHER_ABILITY_BY_PLAYSTYLE, EXPERIENCE_TIPS, FEAT_KEYWORDS, PLAYSTYLE_DESCRIPTIONS,
+  ABILITY_FILL_ORDER, BACKGROUND_THEMES, EITHER_ABILITY_BY_PLAYSTYLE, EXPERIENCE_TIPS, FEAT_KEYWORDS, PLAYSTYLE_DESCRIPTIONS,
   ORIGIN_FEAT_PREFERENCE, PLAYSTYLE_NAMES, SPECIES_FIT_WEIGHT, SPELL_ROLE_WEIGHTS, STAPLE_SPELLS, STAPLE_SPELL_BONUS,
-  campaignFit, roleFit, spellRoles
+  campaignFit, magicInitiateList, roleFit, spellRoles
 } from './heuristics.js';
 import { type BuildRuleset, LEGACY_BACKGROUND_ABILITIES, isLegacy, speciesIncreasesFor } from './legacy.js';
 import { checkPrerequisite } from './prerequisites.js';
@@ -46,13 +46,6 @@ function rulesetOf(ruleset: string | null | undefined): Ruleset {
 
 /** "resistance to poison", "resistance to acid and fire" -- named damage types only. */
 const DAMAGE_RESISTANCE = /resistance to (?:\w+ (?:and|or) )?(acid|cold|fire|force|lightning|necrotic|poison|psychic|radiant|thunder|bludgeoning|piercing|slashing)\b/gi;
-
-/** Background names that suit a campaign's emphasis. */
-const BACKGROUND_THEMES: Record<string, RegExp> = {
-  combat: /soldier|gladiator|mercenary|guard|knight/i,
-  roleplay: /noble|entertainer|charlatan|acolyte|courtier|guild/i,
-  exploration: /outlander|sage|folk hero|hermit|wayfarer|sailor|guide/i
-};
 
 export class CharacterBuilder {
   constructor(private readonly client: Open5eClient) {}
@@ -143,16 +136,23 @@ export class CharacterBuilder {
     const keyAbilities = this.keyAbilities(cls, rules, playstyle, preferredAbilities, speciesIncreases);
     const priority = priorityOrder(keyAbilities, preferredAbilities, ABILITY_FILL_ORDER[playstyle]);
 
-    // Background
-    const backgrounds = (await this.client.searchBackgrounds('', { limit: 100, scope })).results;
+    // Background: from the build's sources, plus any background_sources,
+    // which widen the backgrounds without widening anything else.
+    const backgrounds = await this.backgroundsFor(scope, options.backgroundSources);
     const background = options.preferredBackground
       ? await this.preferred(backgrounds, options.preferredBackground, 'Background', scope,
-        name => this.client.getBackgroundDetails(name))
+        name => this.client.getBackgroundDetails(name), undefined, 'background_sources')
       : best(backgrounds, bg => {
         const listed = backgroundAbilities(bg, ruleset);
         const theme = campaignType !== 'mixed' && BACKGROUND_THEMES[campaignType].test(bg.name) ? 1 : 0;
         return increaseFit(backgroundIncreases(listed, keyAbilities), keyAbilities) + theme;
-      }, bg => bg);
+      }, (bg, tied) => {
+        if (tied > 1) {
+          notes.push(`${tied} backgrounds fit this build equally well; chose ${bg.name}. ` +
+            'Name one with preferred_background to choose another.');
+        }
+        return bg;
+      });
     if (!background) throw new Error('No backgrounds in the chosen sources');
 
     // Ability scores
@@ -221,7 +221,7 @@ export class CharacterBuilder {
       ? await this.suggestFeats({ level, scores: atLevel, canCastSpells, features: featureNames }, playstyle, keyAbilities, scope)
       : [];
     const originFeat = legacyBackground
-      ? await this.originFeatFor(playstyle, scope, warnings)
+      ? await this.originFeatFor(cls.name, rules?.spellcastingAbility ?? null, atLevel, playstyle, scope, warnings)
       : background.benefits.find(b => b.type === 'feat')?.desc;
 
     // Level-by-level plan
@@ -359,7 +359,8 @@ export class CharacterBuilder {
     kind: string,
     scope: ContentScope,
     lookupAnywhere: (name: string) => Promise<{ name: string; source: SourceLabel } | null>,
-    extraRank?: (row: T) => number[]
+    extraRank?: (row: T) => number[],
+    widenWith = 'sources or ruleset'
   ): Promise<T> {
     const found = pickByName(rows, name, { nameOf: r => r.name, sourceKeyOf: r => r.source.key, extraRank });
     if (found) return found;
@@ -369,7 +370,7 @@ export class CharacterBuilder {
       .filter(Boolean).join(' and ');
     if (elsewhere) {
       throw new Error(`${kind} "${name}" is not in ${scopeText}; ${elsewhere.name} is in ` +
-        `${elsewhere.source.name} (${elsewhere.source.key}). Pass sources or ruleset to include it.`);
+        `${elsewhere.source.name} (${elsewhere.source.key}). Pass ${widenWith} to include it.`);
     }
     throw new Error(`${kind} "${name}" not found`);
   }
@@ -454,8 +455,33 @@ export class CharacterBuilder {
     };
   }
 
-  /** The Origin feat a 2014 background grants in a 2024 build (ORIGIN_FEAT_PREFERENCE). */
-  private async originFeatFor(playstyle: Playstyle, scope: ContentScope, warnings: string[]): Promise<string | undefined> {
+  /** Backgrounds in the build's scope, plus those in `extraSources`. */
+  private async backgroundsFor(scope: ContentScope, extraSources: string[] | undefined): Promise<BackgroundData[]> {
+    const inScope = (await this.client.searchBackgrounds('', { limit: 100, scope })).results;
+    if (!extraSources || extraSources.length === 0) return inScope;
+    const extra = { sources: extraSources };
+    await this.client.scopeDocuments(extra); // rejects an unknown source up front
+    const more = (await this.client.searchBackgrounds('', { limit: 100, scope: extra })).results;
+    const seen = new Set(inScope.map(bg => bg.key));
+    return [...inScope, ...more.filter(bg => !seen.has(bg.key))];
+  }
+
+  /**
+   * The Origin feat a 2014 background grants in a 2024 build
+   * (ORIGIN_FEAT_PREFERENCE). Magic Initiate names its spell list
+   * (magicInitiateList) and its spellcasting ability: the class's own if it
+   * is Intelligence, Wisdom or Charisma, else the highest of the three
+   * (2024 PHB, Magic Initiate: "Intelligence, Wisdom, or Charisma ...
+   * choose when you select this feat").
+   */
+  private async originFeatFor(
+    className: string,
+    classAbility: Ability | null,
+    scores: AbilityScores,
+    playstyle: Playstyle,
+    scope: ContentScope,
+    warnings: string[]
+  ): Promise<string | undefined> {
     const { results } = await this.client.searchFeats('', { limit: 100, scope });
     const origin = results.filter(feat => /^origin$/i.test(feat.type));
     const preference = ORIGIN_FEAT_PREFERENCE[playstyle].map(name => name.toLowerCase());
@@ -464,8 +490,18 @@ export class CharacterBuilder {
       return i === -1 ? preference.length : i;
     };
     const chosen = origin.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))[0];
-    if (!chosen) warnings.push('No Origin feat is in the chosen sources for the 2014 background to grant');
-    return chosen?.name;
+    if (!chosen) {
+      warnings.push('No Origin feat is in the chosen sources for the 2014 background to grant');
+      return undefined;
+    }
+    if (!/^magic initiate$/i.test(chosen.name)) return chosen.name;
+
+    const mental: Ability[] = ['intelligence', 'wisdom', 'charisma'];
+    const ability = classAbility && mental.includes(classAbility)
+      ? classAbility
+      : mental.reduce((a, b) => (scores[b] > scores[a] ? b : a));
+    const abilityName = ability[0].toUpperCase() + ability.slice(1);
+    return `${chosen.name} (${magicInitiateList(className, playstyle)}, casting with ${abilityName})`;
   }
 
   private async suggestFeats(
@@ -575,12 +611,16 @@ function oneOf<T extends string>(value: string, allowed: readonly T[], field: st
 }
 
 /** The highest-scoring row; ties go to the preferred source, then the name. */
-function best<T extends { name: string; source: SourceLabel }, R>(rows: T[], score: (row: T) => number, pick: (row: T) => R): R | null {
+/** The highest-scoring row, handed to `pick` with how many rows share its score. */
+function best<T extends { name: string; source: SourceLabel }, R>(
+  rows: T[], score: (row: T) => number, pick: (row: T, tied: number) => R
+): R | null {
   const ranked = rows
     .map(row => ({ row, score: score(row) }))
     .sort((a, b) => b.score - a.score || sourceRank(a.row.source.key) - sourceRank(b.row.source.key) ||
       a.row.name.localeCompare(b.row.name));
-  return ranked[0] ? pick(ranked[0].row) : null;
+  if (!ranked[0]) return null;
+  return pick(ranked[0].row, ranked.filter(r => r.score === ranked[0].score).length);
 }
 
 /**

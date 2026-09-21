@@ -8,7 +8,9 @@ import {
   planImprovements, priorityOrder, increaseFit
 } from '../../dist/character-build/abilities.js';
 import { checkPrerequisite } from '../../dist/character-build/prerequisites.js';
-import { spellRoles, roleFit } from '../../dist/character-build/heuristics.js';
+import {
+  BACKGROUND_THEMES, magicInitiateList, spellRoles, roleFit
+} from '../../dist/character-build/heuristics.js';
 import { heavyWeaponWeaknesses, usesHeavyWeapons } from '../../dist/character-build/builder.js';
 import { isLegacy, speciesIncreasesFor, LEGACY_BACKGROUND_ABILITIES } from '../../dist/character-build/legacy.js';
 
@@ -214,5 +216,22 @@ describe('2014 options in a 2024 build', () => {
 
   test('a 2014 background may raise any ability', () => {
     assert.equal(LEGACY_BACKGROUND_ABILITIES.length, 6);
+  });
+});
+
+describe('background heuristics', () => {
+  test('Magic Initiate opens a spell list the class lacks', () => {
+    assert.equal(magicInitiateList('Fighter', 'damage'), 'Wizard');
+    assert.equal(magicInitiateList('Wizard', 'damage'), 'Druid', 'not the Wizard\'s own list');
+    assert.equal(magicInitiateList('Cleric', 'support'), 'Druid');
+    assert.equal(magicInitiateList('Bard', 'support'), 'Cleric');
+  });
+
+  test('campaign themes recognise backgrounds beyond the SRD', () => {
+    assert.match('Mercenary Recruit', BACKGROUND_THEMES.combat);
+    assert.match('Diplomat', BACKGROUND_THEMES.roleplay);
+    assert.match('Northern Minstrel', BACKGROUND_THEMES.roleplay);
+    assert.match('Desert Runner', BACKGROUND_THEMES.exploration);
+    assert.doesNotMatch('Northern Minstrel', BACKGROUND_THEMES.combat);
   });
 });

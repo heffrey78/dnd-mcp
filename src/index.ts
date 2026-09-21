@@ -877,6 +877,11 @@ const tools: Tool[] = [
           type: 'string',
           description: 'Preferred character background (optional)',
         },
+        background_sources: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'More Open5e documents to draw backgrounds from, on top of ruleset/sources, e.g. ["toh"]. Species, feats and spells stay in ruleset/sources. A 2014 background in a 2024 build raises any abilities (+2/+1) and grants an Origin feat (optional)',
+        },
         playstyle: {
           type: 'string',
           description: 'Desired playstyle',
@@ -1790,6 +1795,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           preferredClass: optionalString(args?.preferred_class, 'preferred_class'),
           preferredRace: optionalString(args?.preferred_race, 'preferred_race'),
           preferredBackground: optionalString(args?.preferred_background, 'preferred_background'),
+          backgroundSources: validateOptionalStringArray(args?.background_sources, 'background_sources'),
           playstyle: optionalString(args?.playstyle, 'playstyle') as Playstyle | undefined,
           campaignType: optionalString(args?.campaign_type, 'campaign_type') as CampaignType | undefined,
           experienceLevel: optionalString(args?.experience_level, 'experience_level') as ExperienceLevel | undefined,
