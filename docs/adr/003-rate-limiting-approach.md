@@ -1,7 +1,9 @@
 # ADR-003: Rate Limiting Approach
 
 ## Status
-Accepted
+Superseded
+
+Superseded by [ADR-006](006-open5e-api-migration.md). Open5e is a public JSON API, so the scraping-era rate limits no longer apply; in-process caching is the current throttle.
 
 ## Context
 Web scraping dnd5e.wikidot.com requires responsible rate limiting to:

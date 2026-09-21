@@ -1,7 +1,9 @@
 # ADR-004: Content Quality Management
 
 ## Status
-Accepted
+Superseded
+
+Partially superseded by [ADR-006](006-open5e-api-migration.md). Open5e exposes source and licence per item via the `document` field, replacing the wiki content-tiering scheme.
 
 ## Context
 The D&D 5e wiki contains mixed content quality with three distinct categories:

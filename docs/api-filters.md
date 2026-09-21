@@ -1,5 +1,49 @@
 # Open5e API Filter Parameters Reference
-## Complete Documentation of Available Query Parameters
+
+> **Verified 2026-09-20.** Open5e's filtering is uneven across v1 and v2, and an
+> unsupported filter is *ignored* rather than rejected -- an unfiltered
+> collection comes back looking like a page of matches. The table below records
+> which parameter actually works where; `src/open5e-client.ts` routes queries
+> accordingly, and `test/integration/open5e-contract.test.js` fails if any of
+> this stops being true.
+
+## Name lookup: which parameter to use
+
+| Endpoint | `name__icontains` | `search` | Client strategy |
+|----------|-------------------|----------|-----------------|
+| `/v1/spells/` | works | full-text, matches descriptions | `name__icontains` |
+| `/v1/monsters/` | works | full-text | `name__icontains` |
+| `/v1/magicitems/` | works | full-text | `name__icontains` |
+| `/v1/spelllist/` | works | full-text | `name__icontains` |
+| `/v1/sections/` | works | full-text | `search` (rules prose; full-text is wanted) |
+| `/v2/species/` | works | **ignored** | `name__icontains` |
+| `/v2/backgrounds/` | works | **ignored** | `name__icontains` |
+| `/v2/feats/` | works | **ignored** | `name__icontains` |
+| `/v2/armor/` | **ignored** | **ignored** | fetch all, filter locally |
+| `/v2/weapons/` | **ignored** | **ignored** | fetch all, filter locally |
+| `/v2/conditions/` | **ignored** | **ignored** | fetch all, filter locally |
+
+Notes:
+
+- **`search=` is not a name filter.** On v1 it matches description text, so
+  `/v1/spells/?search=fireball` returns *Antimagic Field*. On v2 it is ignored
+  entirely and the full collection comes back.
+- **`/v2/races/` no longer exists** -- it is now `/v2/species/`, and the fields
+  `is_subrace` / `subrace_of` were renamed to `is_subspecies` / `subspecies_of`.
+  Species rows carry `key` rather than a `url`.
+- The three local-filter collections are small (25 armor, 75 weapons, 21
+  conditions), so fetching them whole is cheap.
+- Results contain **duplicates across sourcebooks** -- two "Fireball" rows, two
+  "Soldier" backgrounds. Deduplication is left to the caller.
+
+---
+
+## Original reference
+
+The material below was written on 2025-06-27 and is kept for its per-endpoint
+parameter detail. Treat the `search` guidance in it as superseded by the table
+above.
+
 
 **Date**: 2025-06-27  
 **Source**: Testing of Open5e API endpoints  

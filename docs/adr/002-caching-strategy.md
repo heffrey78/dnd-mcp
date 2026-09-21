@@ -1,7 +1,7 @@
 # ADR-002: Caching Strategy for D&D Content
 
 ## Status
-Accepted
+Accepted. Still current: caching moved from scraped pages to Open5e responses, and `UnifiedSearchEngine` adds a second result-level cache on top of the client cache.
 
 ## Context
 The D&D 5e wiki content is relatively static, making it ideal for aggressive caching. The guide analysis shows that content rarely changes, and implementing effective caching will:

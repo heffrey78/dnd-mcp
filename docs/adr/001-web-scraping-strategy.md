@@ -1,7 +1,9 @@
 # ADR-001: Web Scraping Strategy for D&D 5e Wiki
 
 ## Status
-Accepted
+Superseded
+
+Superseded by [ADR-006](006-open5e-api-migration.md). The WikiDot scraper was removed; content now comes from the Open5e API.
 
 ## Context
 The D&D 5e MCP server needs to extract structured content from dnd5e.wikidot.com, which is a community-maintained wiki with consistent URL patterns but mixed content quality. The guide analysis reveals specific endpoint patterns and content structures that need to be handled.

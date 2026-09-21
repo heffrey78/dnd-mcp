@@ -1,7 +1,7 @@
 # ADR-005: MCP API Structure and Tool Design
 
 ## Status
-Accepted
+Accepted. Still current, and extended since with `unified_search` and the DM/player helper tools.
 
 ## Context
 The MCP server needs to expose D&D 5e content through a well-structured set of tools that follow MCP protocol conventions. Based on the guide analysis, the API should provide comprehensive access to spells, races, classes, equipment, and other game content while maintaining usability and performance.
