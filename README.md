@@ -1,119 +1,26 @@
 # D&D 5E MCP Server
 
-An MCP (Model Context Protocol) server that provides access to D&D 5th Edition content via the Open5e REST API. This server enables AI assistants and other MCP clients to retrieve comprehensive D&D 5E information including spells, classes, races, monsters, and equipment.
+An [MCP](https://modelcontextprotocol.io) server that gives AI assistants access
+to D&D 5th Edition content from the [Open5e](https://open5e.com) API: spells,
+monsters, classes, species, equipment, rules references, plus encounter-building
+and character-build helpers. It uses Open5e's v2 API.
 
-## Available Tools
+## Requirements
 
-### Universal Search
-- **`unified_search`** - Search across all D&D content types with intelligent ranking
-  - Required `query` parameter for search terms
-  - Optional `content_types` filter for specific content (spells, monsters, races, etc.)
-  - Optional `fuzzy_threshold` for matching sensitivity
-  - Returns ranked results across all content types
+- Node.js 20 or newer (developed against Node 26)
+- Network access to `api.open5e.com`
 
-### Spell Tools
-- **`search_spells`** - Search for spells by name or retrieve all spells
-  - Optional `query` parameter for filtering by spell name
-  - Returns basic spell information (name, level, school, casting time, etc.)
-- **`get_spell_details`** - Get comprehensive details about a specific spell
-  - Requires `spell_name` parameter
-  - Returns full spell description, components, duration, and class lists
-- **`get_spell_by_level`** - Get all spells of a specific level (0-9)
-  - Requires `level` parameter (0 for cantrips, 1-9 for spell levels)
-- **`get_spells_by_class`** - Get all spells available to a specific class
-  - Requires `class_name` parameter (e.g., "wizard", "cleric", "bard")
-
-### Class Tools
-- **`search_classes`** - Get a list of all available D&D 5E classes
-  - Returns basic information for all core classes
-- **`get_class_details`** - Get detailed information about a specific class
-  - Requires `class_name` parameter
-  - Returns hit die, saving throws, description, and available subclasses
-
-### Race Tools
-- **`search_races`** - Get a list of all available D&D 5E races
-  - Returns basic race information from the lineage page
-- **`get_race_details`** - Get detailed information about a specific race
-  - Requires `race_name` parameter
-  - Returns size, speed, ability score increases, traits, and description
-
-### Monster Tools
-- **`search_monsters`** - Search for monsters with filtering options
-  - Optional `query` parameter for monster names
-  - Optional `challenge_rating` filter
-  - Returns monster stats and basic information
-- **`get_monsters_by_cr`** - Get all monsters of a specific challenge rating
-- **`get_monsters_by_cr_range`** - Get monsters within a CR range for encounter planning
-
-### Equipment Tools
-- **`search_weapons`** - Search for weapons with property filtering
-  - Optional filters for martial/finesse weapons
-- **`search_armor`** - Search for armor with AC and category filtering
-- **`search_magic_items`** - Search for magic items with rarity filtering
-- **`get_magic_item_details`** - Get detailed magic item information
-
-### Character Building Tools
-- **`search_feats`** - Search for character feats
-- **`get_feat_details`** - Get detailed feat information
-- **`search_backgrounds`** - Search for character backgrounds
-- **`get_background_details`** - Get detailed background information
-- **`generate_character_build`** - Generate optimized character builds
-- **`compare_character_builds`** - Compare multiple character build options
-- **`get_build_recommendations`** - Get build recommendations for party composition
-
-### Dungeon Master Tools
-- **`build_encounter`** - Build balanced encounters for specified party
-  - Requires `party_size`, `party_level`, and `difficulty`
-  - Optional filters for environment, monster types, CR range
-  - Returns balanced encounter with XP calculations
-- **`calculate_encounter_difficulty`** - Calculate difficulty of custom encounters
-  - Requires party info and list of monsters with counts
-  - Returns encounter difficulty rating and XP breakdown
-
-### Rules & Reference Tools
-- **`search_conditions`** - Search for status conditions and effects
-- **`get_condition_details`** - Get detailed condition information
-- **`get_all_conditions`** - Get all conditions for quick reference
-- **`search_sections`** - Search rules sections for quick rule lookups
-- **`get_section_details`** - Get detailed rules section information
-- **`search_spell_lists`** - Search spell lists by class
-- **`get_spell_list_details`** - Get detailed spell list for specific classes
-
-## Installation
-
-1. Clone this repository:
-   ```bash
-   git clone <repository-url>
-   cd dnd-mcp
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Build the project:
-   ```bash
-   npm run build
-   ```
-
-## Usage
-
-### Running the Server
+## Setup
 
 ```bash
-npm start
+npm install
+npm run build
 ```
 
-### Development Mode
+## Connecting a client
 
-```bash
-npm run dev
-```
-
-### MCP Client Configuration
-
-Add to your MCP client configuration (e.g., `mcp.json`):
+The server speaks JSON-RPC over stdio. Point your MCP client at the built entry
+point:
 
 ```json
 {
@@ -121,106 +28,173 @@ Add to your MCP client configuration (e.g., `mcp.json`):
     "dnd-5e": {
       "command": "node",
       "args": ["dist/index.js"],
-      "cwd": "/path/to/dnd-mcp"
+      "cwd": "/absolute/path/to/dnd-mcp"
     }
   }
 }
 ```
 
-### Example MCP Tool Usage
+Set `cwd` to wherever you cloned this repository. A starting point is in
+[`mcp.json`](mcp.json).
 
-The server implements the Model Context Protocol, exposing tools that can be called by MCP clients. Here are some example tool calls:
+Verify it responds:
 
-#### Universal Search
-```json
-{
-  "name": "unified_search",
-  "arguments": {
-    "query": "fireball",
-    "content_types": ["spells", "magic-items"]
-  }
-}
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | node dist/index.js
 ```
 
-#### Build Encounter
-```json
-{
-  "name": "build_encounter",
-  "arguments": {
-    "party_size": 4,
-    "party_level": 5,
-    "difficulty": "medium",
-    "environment": "dungeon"
-  }
-}
-```
+## Tools
 
-#### Generate Character Build
-```json
-{
-  "name": "generate_character_build",
-  "arguments": {
-    "playstyle": "damage",
-    "preferred_class": "fighter",
-    "campaign_type": "combat"
-  }
-}
-```
+Every tool except `get_api_stats` also takes two optional arguments that
+restrict it to some sourcebooks:
 
-## Technical Features
+- `ruleset`: `"5e-2014"`, `"5e-2024"` or `"a5e"`;
+- `sources`: Open5e document keys, e.g. `["srd-2014", "toh"]`.
 
-- **Intelligent Caching**: 1-hour TTL cache to minimize requests to source website
-- **Rate Limiting**: 1-second delays between requests to respect server resources
-- **Error Handling**: Comprehensive error handling for network issues and missing content
-- **TypeScript**: Fully typed implementation for better development experience
-- **MCP Protocol**: Full compliance with Model Context Protocol specifications
-- **Comprehensive Testing**: Full test coverage for Open5e API functionality and scraping operations
+Without them, searches cover every source Open5e serves. Each result carries
+a `source` label (document key, title and ruleset), and lookups by name
+prefer the 2024 SRD, then the 2014 SRD. Character builds default to the 2024
+SRD only (see [ADR-008](docs/adr/008-default-to-2024.md)); pass
+`ruleset: "5e-2014"` or `sources: ["srd-2014"]` for the older rules. An
+unknown ruleset or document is an error. A build that mixes editions, e.g.
+`sources: ["srd-2024", "open5e"]`, uses 2014 species and backgrounds the way
+the 2024 Player's Handbook allows: the species keeps its traits, and ability
+increases come from the background. To add backgrounds without adding
+anything else, pass `background_sources` to `generate_character_build`, e.g.
+`background_sources: ["toh"]` for Tome of Heroes' 19 backgrounds.
 
-## Architecture
+### Universal search
 
-- **Open5e API Integration**: Uses Axios for REST API communication with Open5e
-- **Content Processing**: Structured data handling from Open5e JSON responses
-- **MCP Server**: Standard MCP protocol implementation with stdio transport
-- **Caching Layer**: NodeCache for efficient content storage
+| Tool | Description | Required |
+|------|-------------|----------|
+| `unified_search` | Search across all D&D content types (spells, monsters, items, races, classes, etc.) with intelligent ranking and filtering | `query` |
+
+### Spells
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_spells` | Search spells by name, level, school or class list | - |
+| `get_spell_details` | Get detailed information about a specific D&D 5E spell | `spell_name` |
+| `get_spell_by_level` | Get all spells of a specific level | `level` |
+| `get_spells_by_class` | Get the spells on a class's spell list, lowest level first; filter by `level` or `max_level` | `class_name` |
+
+### Classes and species
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_classes` | List D&D 5E base classes with their features and subclass names | - |
+| `get_class_details` | Get a class: hit die, proficiencies, features by level, spell slots and subclasses with their features | `class_name` |
+| `search_races` | Search species, including subspecies whose names omit the parent (Lightfoot for Halfling) | - |
+| `get_race_details` | Get a species with what it inherits resolved: size, speed, combined ability increases, parent traits | `race_name` |
+
+### Monsters
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_monsters` | Search monsters by name, challenge rating, type or environment | - |
+| `get_monsters_by_cr` | Get monsters by challenge rating | `challenge_rating` |
+| `get_monsters_by_cr_range` | Get monsters within a challenge rating range, optionally by environment and type | `min_cr, max_cr` |
+
+### Equipment and items
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_weapons` | Search for D&D 5E weapons with property filtering | - |
+| `search_magic_items` | Search magic items by name, rarity, category or attunement | - |
+| `get_magic_item_details` | Get detailed information about a specific D&D 5E magic item | `item_name` |
+| `search_armor` | Search for D&D 5E armor with filtering options | - |
+| `get_armor_details` | Get detailed information about a specific D&D 5E armor | `armor_name` |
+
+### Character options
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_feats` | Search for D&D 5E feats with filtering options | - |
+| `get_feat_details` | Get detailed information about a specific D&D 5E feat | `feat_name` |
+| `search_backgrounds` | Search for D&D 5E character backgrounds with filtering options | - |
+| `get_background_details` | Get detailed information about a specific D&D 5E background | `background_name` |
+
+### Rules reference
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `search_conditions` | Search for D&D 5E conditions and status effects | - |
+| `get_condition_details` | Get a condition, with its wording for the requested ruleset | `condition_name` |
+| `get_all_conditions` | Get all D&D 5E conditions for quick reference | - |
+| `search_sections` | Search rules sections by name or text | - |
+| `get_section_details` | Get a rules section by name or key | `section_name` |
+| `get_all_sections` | List every rules section by name, key and chapter, without the text | - |
+
+### DM tools
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `build_encounter` | Build a balanced encounter for a party, sampling monsters from the whole CR range | `party_size, party_level, difficulty` |
+| `calculate_encounter_difficulty` | Calculate the difficulty of a custom encounter with specific monsters | `party_size, party_level, monsters` |
+
+### Player tools
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `generate_character_build` | Generate a build: species, class and subclass, background, ability scores, hit points, spells, feats and a level-by-level plan | - |
+| `compare_character_builds` | Generate and compare multiple character builds with different options | `build_options` |
+| `get_build_recommendations` | Get character build recommendations based on party composition and campaign needs | `existing_party, campaign_type` |
+
+### Diagnostics
+
+| Tool | Description | Required |
+|------|-------------|----------|
+| `get_api_stats` | Get API performance and caching statistics | - |
 
 ## Development
 
-### Available Scripts
-
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run dev` - Run in development mode with hot reload
-- `npm start` - Run the built server
-- `npm run lint` - Run ESLint
-- `npm test` - Run Jest tests (includes comprehensive Open5e API tests)
-
-### Project Structure
-
-```
-src/
-├── index.ts      # MCP server implementation and tool handlers
-├── scraper.ts    # Open5e API integration and data fetching
-tsconfig.json     # TypeScript configuration
-mcp.json         # MCP client configuration example
+```bash
+npm run dev               # watch mode
+npm run build             # compile to dist/
+npm run lint              # eslint over src/
+npm test                  # unit tests, no network (builds first)
+npm run test:integration  # live Open5e API tests
+npm run test:all          # both suites
 ```
 
-## Data Sources
+Tests use Node's built-in test runner. `test/unit/` mocks `fetch`, so it runs
+offline and fast; `test/integration/` exercises the real API and the real server
+process. See [docs/testing.md](docs/testing.md).
 
-This server uses the [Open5e REST API](https://open5e.com/api/v1/) to access D&D 5th Edition content. The implementation:
+## Known quirks
 
-- Leverages the Open5e API for comprehensive D&D 5E data
-- Implements intelligent caching to minimize API requests
-- Uses appropriate rate limiting and error handling
-- Provides structured JSON responses from the API
+- **Duplicate names across books.** A search for `fireball` returns every
+  sourcebook's Fireball, each labelled with its `source`. Detail lookups pick
+  one (2024 SRD first); pass `ruleset` or `sources` to choose another.
+- **Uneven upstream filtering.** Open5e ignores many filter parameters and
+  returns the whole collection. The client sends only verified parameters and
+  matches the rest locally; see [docs/api-filters.md](docs/api-filters.md).
+- **Gaps in Open5e's data** are reported, not guessed. Examples: no 2014 SRD
+  spell lists the Paladin, and some Tome of Heroes heritages have no source
+  for their size. Look in a build's `warnings` or a species'
+  `resolved.unresolved`.
+- **Builds are opinionated.** Game rules (spell slots, hit points, ASIs) come
+  from the SRD, but the scoring choices that pick a class, species or spell
+  are judgment calls, collected in `src/character-build/heuristics.ts`.
+  Multiclass builds are not supported; `allow_multiclass: true` is rejected.
+- **`unified_search` count vs items.** For `classes` the reported `count` can
+  exceed the number of returned items, because classes are listed whole and
+  then ranked against the query.
 
-## Recent Updates
+## Documentation
 
-- **Open5e Migration**: Migrated from web scraping to Open5e REST API for better reliability
-- **Comprehensive Tool Suite**: Added 40+ tools covering all D&D 5E content types
-- **Unified Search**: Intelligent search across all content with fuzzy matching
-- **DM Tools**: Encounter building, difficulty calculation, and party balancing
-- **Character Building**: Automated character optimization and build comparison
-- **Full Test Coverage**: Comprehensive testing for all API functionality
+- [docs/api-filters.md](docs/api-filters.md) - per-endpoint Open5e filter support
+- [docs/testing.md](docs/testing.md) - how the suites are organised
+- [docs/adr/](docs/adr/) - architecture decision records
+- [docs/history/](docs/history/) - superseded point-in-time reports
+- [CLAUDE.md](CLAUDE.md) - guidance for Claude Code
 
-## License
+## Data source and licence
 
-MIT License
+Content comes from the Open5e API, which serves material published under the
+OGL and Creative Commons licences. This server is MIT licensed; the game
+content it returns is governed by its own licences. Each item's `source`
+names the document it comes from.

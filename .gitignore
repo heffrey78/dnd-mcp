@@ -72,3 +72,5 @@ jspm_packages/
 # Temporary folders
 tmp/
 temp/
+# Local MCP lifecycle database
+lifecycle.db*

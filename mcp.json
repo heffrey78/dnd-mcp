@@ -2,8 +2,10 @@
   "mcpServers": {
     "dnd-5e": {
       "command": "node",
-      "args": ["dist/index.js"],
-      "cwd": "/media/jeffwikstrom/Secondary/Projects/dnd-mcp"
+      "args": [
+        "dist/index.js"
+      ],
+      "cwd": "/absolute/path/to/dnd-mcp"
     }
   }
 }

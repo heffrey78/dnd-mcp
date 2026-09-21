@@ -1,4 +1,23 @@
 import NodeCache from 'node-cache';
+import {
+  ENDPOINTS, PAGE_MAX, type EndpointName, type EndpointSpec, type FilterValue, type FiltersFor
+} from './open5e-endpoints.js';
+import {
+  type ContentScope, type SourceLabel,
+  documentKeyOf, pickByName, resolveScope, sourceOf, toSourceLabel
+} from './sources.js';
+
+import {
+  ABILITIES, type CasterType, type Ruleset, classRulesFor, keyAbilityList, spellSlots
+} from './class-rules.js';
+
+import {
+  type AbilityIncreases, combineIncreases, isDeferredTrait, originSpeciesNames,
+  parseAbilityScoreIncreases, parseSizeCategories, parseWalkingSpeed
+} from './species.js';
+
+export type { ContentScope, SourceLabel } from './sources.js';
+export type { AbilityIncreases } from './species.js';
 
 // Enhanced interfaces based on Open5e API structure
 export interface EnhancedSpellData {
@@ -11,16 +30,21 @@ export interface EnhancedSpellData {
   duration: string;
   description: string;
   classes: string[];
+  key: string;
+  source: SourceLabel;
   url: string;
-  
+
   // Enhanced fields from Open5e API
   ritual: boolean;
   concentration: boolean;
   higherLevel?: string;
   damageRoll?: string;
+  damageTypes: string[];
   savingThrow?: string;
+  attackRoll: boolean;
   targetType?: string;
   targetCount?: number;
+  reactionCondition?: string;
   componentDetails: {
     verbal: boolean;
     somatic: boolean;
@@ -31,16 +55,29 @@ export interface EnhancedSpellData {
   };
 }
 
+export interface ClassFeature {
+  name: string;
+  key: string;
+  /** Levels at which the feature is gained or improves, ascending. */
+  levels: number[];
+  /** Per-level detail where Open5e gives one, e.g. { 5: "d8" } for Bardic Inspiration. */
+  details: Record<number, string>;
+  description: string;
+}
+
 export interface EnhancedClassData {
   name: string;
+  key: string;
+  /** "d8". */
   hitDie: string;
+  /** The abilities the class is built around (see class-rules.ts). */
   primaryAbility: string[];
   savingThrows: string[];
   description: string;
   subclasses: string[];
+  source: SourceLabel;
   url: string;
-  
-  // Enhanced fields
+
   hpAt1stLevel?: string;
   hpAtHigherLevels?: string;
   proficiencies: {
@@ -50,42 +87,80 @@ export interface EnhancedClassData {
     skills?: string;
   };
   equipment?: string;
-  progressionTable?: string;
   spellcastingAbility?: string;
+  casterType: CasterType | null;
+  /** Slots per spell level (index 0 = 1st) for class levels 1-20; null for non-casters. */
+  spellSlotsByLevel: number[][] | null;
+  /** Class features in the order they are gained. */
+  features: ClassFeature[];
+  /** Other per-level class table columns ("Cantrips Known", "Proficiency Bonus", ...). */
+  tableColumns: Record<string, Record<number, string>>;
   detailedArchetypes: Array<{
     name: string;
+    key: string;
     desc: string;
-    [key: string]: any;
+    source: SourceLabel;
+    features: ClassFeature[];
   }>;
 }
 
 export interface EnhancedRaceData {
   name: string;
-  size: string;
-  speed: string;
+  key: string;
+  /** Size text, inherited where the species does not give its own; null if unknown. */
+  size: string | null;
+  /** Speed text, inherited likewise; null if unknown. */
+  speed: string | null;
+  /** This species' own "Ability Score Increase" text, without its parent's. */
   abilityScoreIncrease: string;
   traits: string[];
   description: string;
   url: string;
-  
-  // Enhanced fields
+
   isSubrace: boolean;
   subraceOf?: string;
   detailedTraits: Array<{
     name: string;
     desc: string;
   }>;
-  document?: string;
+  source: SourceLabel;
+  /** What the species amounts to once its parent and origin are applied. */
+  resolved: ResolvedSpecies;
+}
+
+export interface ResolvedSpecies {
+  sizeCategories: string[];
+  walkingSpeed: number | null;
+  /** Parent's and subspecies' increases together. */
+  abilityScoreIncreases: AbilityIncreases;
+  /** Key of the species each value came from. */
+  from: { size: string | null; speed: string | null; abilityScores: string[] };
+  /** Traits granted by the parent species that the subspecies does not restate. */
+  inheritedTraits: Array<{ name: string; desc: string; from: string }>;
+  /** What could not be determined, and why. Empty when fully resolved. */
+  unresolved: string[];
+  notes: string[];
+}
+
+export interface MonsterAction {
+  name: string;
+  desc: string;
+  /** Legendary actions only: how many legendary actions it costs. */
+  cost?: number;
 }
 
 export interface MonsterData {
   name: string;
+  key: string;
   size: string;
   type: string;
+  subcategory?: string;
   alignment: string;
   armorClass: number;
+  armorDetail?: string;
   hitPoints: number;
   hitDice: string;
+  /** Movement modes in feet, e.g. { walk: 40, fly: 80, unit: "feet" }. */
   speed: Record<string, any>;
   abilities: {
     strength: number;
@@ -95,26 +170,35 @@ export interface MonsterData {
     wisdom: number;
     charisma: number;
   };
-  savingThrows?: string;
-  skills?: string;
+  /** Proficient saves and their bonuses, e.g. { dexterity: 6 }. */
+  savingThrows: Record<string, number>;
+  skills: Record<string, number>;
+  damageVulnerabilities?: string;
   damageResistances?: string;
   damageImmunities?: string;
   conditionImmunities?: string;
-  senses?: string;
-  languages?: string;
+  senses: string;
+  languages: string;
+  /** As the DMG writes it: "1/4", "5". */
   challengeRating: string;
-  actions: any[];
-  specialAbilities?: any[];
-  reactions?: any[];
-  legendaryActions?: any[];
-  description?: string;
+  experiencePoints?: number;
+  actions: MonsterAction[];
+  bonusActions: MonsterAction[];
+  reactions: MonsterAction[];
+  legendaryActions: MonsterAction[];
+  specialAbilities: MonsterAction[];
+  environments: string[];
+  source: SourceLabel;
   url: string;
 }
 
 export interface WeaponData {
   name: string;
+  key: string;
+  category: 'simple' | 'martial';
   damageDice?: string;
   damageType?: string;
+  /** "20/60 feet" for ranged and thrown weapons; absent for melee-only ones. */
   range?: string;
   properties: {
     martial: boolean;
@@ -125,26 +209,31 @@ export interface WeaponData {
     heavy: boolean;
     twoHanded: boolean;
     versatile: boolean;
+    thrown: boolean;
   };
+  /** Every property as printed, with its detail: "Versatile (1d10)". */
+  propertyNames: string[];
+  source: SourceLabel;
   url: string;
 }
 
 export interface MagicItemData {
   name: string;
+  key: string;
+  /** Item category, e.g. "Wondrous Item". */
   type: string;
   description: string;
   rarity: string;
-  requiresAttunement: string;
-  document: {
-    slug: string;
-    title: string;
-    url: string;
-  };
+  requiresAttunement: boolean;
+  /** Who can attune, where restricted: "by a cleric". */
+  attunementDetail?: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface ArmorData {
   name: string;
+  key: string;
   category: string;
   acDisplay: string;
   acBase: number;
@@ -152,26 +241,34 @@ export interface ArmorData {
   acCapDexMod: number | null;
   grantsStealthDisadvantage: boolean;
   strengthScoreRequired: number | null;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface FeatData {
   name: string;
+  key: string;
   description: string;
   prerequisite: string;
   hasPrerequisite: boolean;
+  /** GENERAL, ORIGIN, FIGHTING_STYLE, EPIC_BOON, ... as Open5e reports it. */
+  type: string;
   benefits: Array<{
     desc: string;
   }>;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface ConditionData {
   name: string;
+  key: string;
+  /** The description for the requested ruleset, else the 2014 one. */
   description: string;
-  document: string;
+  ruleset: string | null;
+  /** Every ruleset's wording, keyed by game system ("5e-2014", ...). */
+  descriptions: Record<string, string>;
+  source: SourceLabel;
   url: string;
 }
 
@@ -190,32 +287,21 @@ export interface BackgroundData {
   languages: string;
   equipment: string;
   feature: string;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
 export interface SectionData {
-  slug: string;
+  key: string;
   name: string;
   description: string;
+  /** Key of the ruleset (chapter) the section belongs to. */
   parent?: string;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
 
-export interface SpellListData {
-  slug: string;
-  name: string;
-  description: string;
-  spells: string[];
-  spellCount: number;
-  document: {
-    slug: string;
-    title: string;
-    url: string;
-  };
-  url: string;
-}
+export type SectionSummary = Pick<SectionData, 'key' | 'name' | 'parent' | 'source'>;
 
 export interface EncounterData {
   id: string;
@@ -251,40 +337,7 @@ export interface EncounterBuilderOptions {
   maxCR?: number;
   monsterTypes?: string[];
   maxMonsters?: number;
-}
-
-export interface CharacterBuildData {
-  id: string;
-  name: string;
-  description: string;
-  race: EnhancedRaceData;
-  class: EnhancedClassData;
-  background: BackgroundData;
-  suggestedFeats: FeatData[];
-  abilityScorePriority: string[];
-  keySpells?: EnhancedSpellData[];
-  recommendedEquipment: string[];
-  buildStrategy: string;
-  levelProgression: {
-    level: number;
-    features: string[];
-    recommendations: string[];
-  }[];
-  playstyle: string;
-  strengths: string[];
-  weaknesses: string[];
-}
-
-export interface CharacterBuildOptions {
-  preferredClass?: string;
-  preferredRace?: string;
-  preferredBackground?: string;
-  playstyle?: 'damage' | 'support' | 'tank' | 'utility' | 'balanced';
-  campaignType?: 'combat' | 'roleplay' | 'exploration' | 'mixed';
-  experienceLevel?: 'beginner' | 'intermediate' | 'advanced';
-  focusLevel?: number; // Target level for optimization
-  allowMulticlass?: boolean;
-  preferredAbilityScores?: string[]; // ['strength', 'dexterity', etc.]
+  scope?: ContentScope;
 }
 
 interface Open5eResponse<T> {
@@ -298,6 +351,8 @@ export class Open5eClient {
   private cache: NodeCache;
   private readonly cacheMaxAge = 30 * 60; // 30 minutes in seconds
   private readonly baseURL = 'https://api.open5e.com';
+  /** Longest query-parameter value the client will send; longer ones throw. */
+  private static readonly MAX_PARAM_LENGTH = 1000;
 
   constructor() {
     this.cache = new NodeCache({ 
@@ -305,6 +360,199 @@ export class Open5eClient {
       checkperiod: 60, // Check for expired keys every minute
       useClones: false // For better performance
     });
+  }
+
+  /**
+   * Local filtering has to see the whole server-filtered set, so it pages
+   * through at most this many full pages before giving up. Past that the
+   * caller must narrow the query with a server-side filter.
+   */
+  private static readonly MAX_LOCAL_SCAN_PAGES = 5;
+
+  /**
+   * The one way the client reads a collection. Each filter is looked up in
+   * ENDPOINTS: server filters become query parameters, local ones run over the
+   * fetched rows. A filter the endpoint does not declare is an error, never a
+   * parameter sent on the hope that Open5e honours it.
+   */
+  async query<E extends EndpointName>(
+    endpoint: E,
+    filters: FiltersFor<E> = {},
+    options: {
+      limit?: number;
+      ordering?: string;
+      /** Return only these fields (v2 sparse fieldsets). */
+      fields?: string[];
+      /** Page through every match rather than returning the first page. */
+      all?: boolean;
+    } = {}
+  ): Promise<{ count: number; rows: any[]; hasMore: boolean }> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const params: Record<string, any> = {};
+    const locals: Array<[(row: any, value: any) => boolean, FilterValue]> = [];
+
+    for (const [filter, raw] of Object.entries(filters) as Array<[string, FilterValue | undefined]>) {
+      if (raw === undefined) continue;
+      const rule = spec.filters[filter];
+      if (!rule) throw new Error(`${spec.path} has no "${filter}" filter`);
+      const value = rule.values ? await this.toLookupKeys(filter, rule.values, raw) : raw;
+      if (value === undefined) continue;
+      if ('server' in rule) {
+        params[rule.server] = value;
+      } else if (!(typeof value === 'string' && value.trim() === '')) {
+        // A blank value means "no filter", as it does for server filters.
+        locals.push([rule.local, value]);
+      }
+    }
+
+    if (options.ordering !== undefined) {
+      if (!spec.ordering?.includes(options.ordering)) {
+        throw new Error(`Invalid ordering "${options.ordering}" for ${spec.path}. ` +
+          `Use one of: ${(spec.ordering ?? []).join(', ') || '(none supported)'}`);
+      }
+      params.ordering = options.ordering;
+    }
+
+    if (options.fields !== undefined) params.fields = options.fields;
+
+    let result: { count: number; rows: any[]; hasMore: boolean };
+
+    if (locals.length === 0 && !options.all) {
+      if (options.limit !== undefined) params.limit = options.limit;
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, params);
+      result = { count: response.count, rows: response.results, hasMore: !!response.next };
+    } else {
+      // Local filters must see the whole server-filtered set. On a large
+      // collection, scan a sparse fieldset and fetch full rows for the matches
+      // afterwards (see EndpointSpec.scanFields).
+      const sparse = spec.scanFields !== undefined && locals.length > 0;
+      const hydrate = sparse && options.fields === undefined;
+      if (sparse) {
+        params.fields = [...new Set(['key', 'name', ...spec.scanFields!, ...(options.fields ?? [])])];
+      }
+
+      const rows = await this.fetchAllPages(endpoint, params);
+      const matched = rows.filter(row => locals.every(([match, value]) => match(row, value)));
+      const wanted = options.limit ?? (hydrate ? Open5eClient.DEFAULT_HYDRATE_LIMIT : matched.length);
+      const limited = matched.slice(0, wanted);
+
+      result = {
+        count: matched.length,
+        rows: hydrate ? await this.fetchByKeys(endpoint, limited.map(row => row.key)) : limited,
+        hasMore: limited.length < matched.length
+      };
+    }
+
+    await this.embedDocuments(result.rows);
+    return result;
+  }
+
+  /**
+   * Maps a filter value onto the keys of its lookup endpoint (see
+   * FilterRule.values), accepting a key or a name in any case. A blank value
+   * is "no filter"; anything unrecognised is an error listing the valid keys.
+   */
+  private async toLookupKeys(filter: string, lookupPath: string, value: FilterValue): Promise<FilterValue | undefined> {
+    const lookup = await this.makeRequest<Open5eResponse<any>>(lookupPath, {
+      limit: PAGE_MAX, fields: ['key', 'name']
+    });
+    const toKey = (item: unknown): string => {
+      const wanted = String(item).trim().toLowerCase();
+      const hit = lookup.results.find(row =>
+        String(row.key).toLowerCase() === wanted || String(row.name ?? '').toLowerCase() === wanted);
+      if (!hit) {
+        const valid = lookup.results.map(row => row.key).sort().join(', ');
+        throw new Error(`Unknown ${filter} "${String(item).trim()}". Valid values: ${valid}`);
+      }
+      return hit.key;
+    };
+
+    if (Array.isArray(value)) return value.length > 0 ? value.map(toKey) : undefined;
+    if (typeof value === 'string' && value.trim() === '') return undefined;
+    return toKey(value);
+  }
+
+  /** Full rows fetched after a sparse scan when the caller gives no limit. */
+  private static readonly DEFAULT_HYDRATE_LIMIT = 50;
+
+  /** Every page of a query, up to MAX_LOCAL_SCAN_PAGES. */
+  private async fetchAllPages(endpoint: EndpointName, params: Record<string, any>): Promise<any[]> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const rows: any[] = [];
+    for (let page = 1; ; page++) {
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
+        ...params, limit: PAGE_MAX, ...(page > 1 ? { page } : {})
+      });
+      rows.push(...response.results);
+      if (!response.next) return rows;
+      if (page >= Open5eClient.MAX_LOCAL_SCAN_PAGES) {
+        throw new Error(`Too many ${endpoint} to filter locally ` +
+          `(over ${PAGE_MAX * page}); narrow the query`);
+      }
+    }
+  }
+
+  /**
+   * Full rows for `keys`, in the order given. Keys are sent through the
+   * endpoint's `keys` filter in batches that keep the URL short.
+   */
+  private async fetchByKeys(endpoint: EndpointName, keys: string[]): Promise<any[]> {
+    const spec: EndpointSpec = ENDPOINTS[endpoint];
+    const keyParam = (spec.filters.keys as { server?: string } | undefined)?.server;
+    if (!keyParam) throw new Error(`${spec.path} has no "keys" filter to fetch rows by`);
+
+    const batches: string[][] = [[]];
+    for (const key of keys) {
+      const batch = batches[batches.length - 1];
+      if (batch.length > 0 && [...batch, key].join(',').length > 900) batches.push([key]);
+      else batch.push(key);
+    }
+
+    const fetched = new Map<string, any>();
+    for (const batch of batches.filter(b => b.length > 0)) {
+      const response = await this.makeRequest<Open5eResponse<any>>(spec.path, {
+        [keyParam]: batch, limit: batch.length
+      });
+      for (const row of response.results) fetched.set(row.key, row);
+    }
+    return keys.map(key => fetched.get(key)).filter(row => row !== undefined);
+  }
+
+  private documentIndexPromise?: Promise<Map<string, SourceLabel>>;
+
+  /** Every Open5e document, by key. Fetched once per client. */
+  private documentIndex(): Promise<Map<string, SourceLabel>> {
+    this.documentIndexPromise ??= this.query('documents', {}, { limit: PAGE_MAX })
+      .then(({ rows }) => new Map(rows.map(row => [row.key, toSourceLabel(row)])))
+      .catch(error => {
+        this.documentIndexPromise = undefined; // do not cache a failure
+        throw error;
+      });
+    return this.documentIndexPromise;
+  }
+
+  /**
+   * Some list endpoints return `document` as a bare key. Replace it with the
+   * document object so every transform can label its source the same way.
+   */
+  private async embedDocuments(rows: any[]): Promise<void> {
+    if (!rows.some(row => typeof row?.document === 'string')) return;
+    const index = await this.documentIndex();
+    for (const row of rows) {
+      if (typeof row?.document !== 'string') continue;
+      const label = index.get(row.document);
+      row.document = {
+        key: row.document,
+        display_name: label?.name ?? row.document,
+        gamesystem: label?.ruleset ? { key: label.ruleset } : null
+      };
+    }
+  }
+
+  /** The document keys a scope allows (see resolveScope), or undefined for all. */
+  async scopeDocuments(scope?: ContentScope): Promise<string[] | undefined> {
+    if (!scope || (scope.ruleset === undefined && scope.sources === undefined)) return undefined;
+    return resolveScope(scope, [...(await this.documentIndex()).values()]);
   }
 
   private async makeRequest<T>(path: string, params?: Record<string, any>): Promise<T> {
@@ -320,7 +568,7 @@ export class Open5eClient {
     // Check cache first
     const cached = this.cache.get<T>(cacheKey);
     if (cached) {
-      console.log(`📦 Cache hit: ${cacheKey}`);
+      console.error(`📦 Cache hit: ${cacheKey}`);
       return cached;
     }
 
@@ -396,20 +644,43 @@ export class Open5eClient {
         return; // Skip null/undefined values
       }
 
-      // Type-specific validation
+      // Type-specific validation. An invalid value must throw rather than be
+      // dropped: a silently discarded filter turns a bad query into an
+      // unfiltered one, which returns the whole collection as if it matched.
       if (typeof value === 'string') {
-        // Prevent injection attacks and validate length
-        const sanitizedValue = value.trim().substring(0, 100);
+        // Length limits on user input are enforced at the MCP boundary. This is
+        // only a guard against building an unreasonable URL, and it throws
+        // rather than truncates: a shortened value is a different filter.
+        const sanitizedValue = value.trim();
+        if (sanitizedValue.length > Open5eClient.MAX_PARAM_LENGTH) {
+          throw new Error(`Invalid value for ${key}: longer than ${Open5eClient.MAX_PARAM_LENGTH} characters`);
+        }
         if (sanitizedValue.length > 0) {
           sanitized[key] = sanitizedValue;
         }
-      } else if (typeof value === 'number') {
-        // Validate numeric ranges
-        if (isFinite(value) && value >= 0 && value <= 1000) {
-          sanitized[key] = value;
+        // An all-whitespace value means "no filter", which is a valid request.
+      } else if (Array.isArray(value)) {
+        // Multi-value filters (`__in`) are sent comma-separated. An empty list
+        // would be dropped by Open5e and match everything, so reject it.
+        const items = value.map(item => typeof item === 'string' ? item.trim() : item);
+        if (items.length === 0 ||
+            items.some(item => typeof item !== 'string' || item.length === 0 || item.includes(','))) {
+          throw new Error(`Invalid value for ${key}: expected a non-empty list of strings without commas`);
         }
+        const joined = items.join(',');
+        if (joined.length > Open5eClient.MAX_PARAM_LENGTH) {
+          throw new Error(`Invalid value for ${key}: longer than ${Open5eClient.MAX_PARAM_LENGTH} characters`);
+        }
+        sanitized[key] = joined;
+      } else if (typeof value === 'number') {
+        if (!isFinite(value) || value < 0 || value > 1000) {
+          throw new Error(`Invalid value for ${key}: must be a number between 0 and 1000`);
+        }
+        sanitized[key] = value;
       } else if (typeof value === 'boolean') {
         sanitized[key] = value;
+      } else {
+        throw new Error(`Invalid value for ${key}: expected a string, string list, number or boolean`);
       }
     });
 
@@ -462,507 +733,742 @@ export class Open5eClient {
     return description;
   }
 
-  private formatDescriptionV1(spell: any): string {
-    let description = spell.desc || '';
-    if (spell.higher_level) {
-      description += `\n\nAt Higher Levels: ${spell.higher_level}`;
+  /** v2 casting times are keys: "action", "bonus-action", "10minutes". */
+  private formatCastingTime(value: unknown): string {
+    const text = String(value ?? '');
+    if (['action', 'bonus-action', 'reaction', 'round', 'turn'].includes(text)) {
+      return `1 ${text.replace('-', ' ')}`;
     }
-    return description;
+    const match = /^(\d+)([a-z]+)$/.exec(text);
+    return match ? `${match[1]} ${match[2]}` : text;
   }
 
-  private parseClassesV1(spell: any): string[] {
-    const classes: string[] = [];
-    
-    // Parse from dnd_class field (comma-separated string)
-    if (spell.dnd_class) {
-      const classString = spell.dnd_class.split(',').map((c: string) => c.trim());
-      classes.push(...classString);
-    }
-    
-    // Parse from spell_lists array
-    if (spell.spell_lists && Array.isArray(spell.spell_lists)) {
-      spell.spell_lists.forEach((cls: string) => {
-        const className = cls.charAt(0).toUpperCase() + cls.slice(1);
-        if (!classes.includes(className)) {
-          classes.push(className);
-        }
-      });
-    }
-    
-    return classes;
-  }
+  private transformSpell(spell: any): EnhancedSpellData {
+    return {
+      name: spell.name,
+      key: spell.key ?? '',
+      level: spell.level ?? 0,
+      school: spell.school?.name ?? '',
+      castingTime: this.formatCastingTime(spell.casting_time),
+      range: spell.range_text ?? '',
+      components: this.formatComponents(spell),
+      duration: spell.duration ?? '',
+      description: this.formatDescription(spell),
+      classes: (spell.classes ?? []).map((cls: any) => cls.name),
+      source: sourceOf(spell),
+      url: spell.key ? `https://api.open5e.com/v2/spells/${spell.key}/` : '',
 
-  private extractTraitValue(traits: any[], traitName: string, defaultValue: string = ''): string {
-    const trait = traits?.find(t => 
-      t.name.toLowerCase().includes(traitName.toLowerCase()) ||
-      t.desc.toLowerCase().includes(traitName.toLowerCase())
-    );
-    return trait ? trait.desc : defaultValue;
-  }
-
-  private extractPrimaryAbilities(classData: any): string[] {
-    // Extract from saving throws as primary indicator
-    if (classData.prof_saving_throws) {
-      return classData.prof_saving_throws.split(',').map((s: string) => s.trim());
-    }
-    return [];
+      ritual: Boolean(spell.ritual),
+      concentration: Boolean(spell.concentration),
+      higherLevel: spell.higher_level || undefined,
+      damageRoll: spell.damage_roll || undefined,
+      damageTypes: spell.damage_types ?? [],
+      savingThrow: spell.saving_throw_ability || undefined,
+      attackRoll: Boolean(spell.attack_roll),
+      targetType: spell.target_type || undefined,
+      targetCount: spell.target_count ?? undefined,
+      reactionCondition: spell.reaction_condition || undefined,
+      componentDetails: {
+        verbal: Boolean(spell.verbal),
+        somatic: Boolean(spell.somatic),
+        material: Boolean(spell.material),
+        materialSpecified: spell.material_specified || undefined,
+        materialCost: spell.material_cost ? Number(spell.material_cost) : undefined,
+        materialConsumed: Boolean(spell.material_consumed)
+      }
+    };
   }
 
   async searchSpells(query?: string, options: {
     level?: number;
+    maxLevel?: number;
     school?: string;
+    classKey?: string;
     limit?: number;
     ordering?: string;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.level !== undefined) params.spell_level = options.level;
-    if (options.school) params.school = options.school;
-    if (options.limit) params.limit = options.limit;
-    if (options.ordering) params.ordering = options.ordering;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/spells/', params);
-
-    const transformedResults: EnhancedSpellData[] = response.results.map(spell => ({
-      // Current MCP format fields
-      name: spell.name,
-      level: spell.level_int || 0,
-      school: spell.school,
-      castingTime: spell.casting_time,
-      range: spell.range,
-      components: spell.components,
-      duration: spell.duration,
-      description: this.formatDescriptionV1(spell),
-      classes: this.parseClassesV1(spell),
-      url: `https://api.open5e.com/v1/spells/${spell.slug}/`,
-      
-      // Enhanced fields
-      ritual: spell.can_be_cast_as_ritual || false,
-      concentration: spell.requires_concentration || false,
-      higherLevel: spell.higher_level,
-      damageRoll: '', // Not available in v1
-      savingThrow: '', // Not available in v1
-      targetType: '', // Not available in v1
-      targetCount: undefined, // Not available in v1
-      componentDetails: {
-        verbal: spell.requires_verbal_components || false,
-        somatic: spell.requires_somatic_components || false,
-        material: spell.requires_material_components || false,
-        materialSpecified: spell.material,
-        materialCost: undefined, // Not available in v1
-        materialConsumed: false // Not available in v1
-      }
-    }));
+    const response = await this.query('spells', {
+      name: query,
+      level: options.level,
+      maxLevel: options.maxLevel,
+      school: options.school,
+      classKey: options.classKey,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, ordering: options.ordering });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(spell => this.transformSpell(spell)),
+      hasMore: response.hasMore
     };
   }
 
-  async getSpellDetails(spellName: string): Promise<EnhancedSpellData | null> {
-    // Search for the spell first
-    const searchResults = await this.searchSpells(spellName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      spell => spell.name.toLowerCase() === spellName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getSpellDetails(spellName: string, scope?: ContentScope): Promise<EnhancedSpellData | null> {
+    // Six sourcebooks have a "Fireball"; fetch enough to see them all and rank.
+    const { results } = await this.searchSpells(spellName, { limit: 50, scope });
+    return this.pickResult(results, spellName);
   }
 
-  async getSpellsByLevel(level: number): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
-    // Remove ordering to avoid API timeouts with larger result sets
-    return this.searchSpells('', { level, limit: 20 });
+  async getSpellsByLevel(level: number, options: {
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
+    return this.searchSpells('', { level, limit: options.limit ?? 20, scope: options.scope });
   }
 
-  async getSpellsByClass(className: string): Promise<EnhancedSpellData[]> {
-    // Use class filter directly in the API call when possible
-    let allSpells: EnhancedSpellData[] = [];
-    let hasMore = true;
-    let page = 1;
-    const limit = 50;
-    
-    // Fetch multiple pages to get enough spells for the class
-    while (hasMore && allSpells.length < 100) {
-      try {
-        const params: Record<string, any> = { limit, page };
-        const response = await this.makeRequest<Open5eResponse<any>>('/v1/spells/', params);
-        
-        const pageResults: EnhancedSpellData[] = response.results.map(spell => ({
-          name: spell.name,
-          level: spell.level_int || 0,
-          school: spell.school,
-          castingTime: spell.casting_time,
-          range: spell.range,
-          components: spell.components,
-          duration: spell.duration,
-          description: this.formatDescriptionV1(spell),
-          classes: this.parseClassesV1(spell),
-          url: `https://api.open5e.com/v1/spells/${spell.slug}/`,
-          ritual: spell.can_be_cast_as_ritual || false,
-          concentration: spell.requires_concentration || false,
-          higherLevel: spell.higher_level,
-          damageRoll: '',
-          savingThrow: '',
-          targetType: '',
-          targetCount: undefined,
-          componentDetails: {
-            verbal: spell.requires_verbal_components || false,
-            somatic: spell.requires_somatic_components || false,
-            material: spell.requires_material_components || false,
-            materialSpecified: spell.material,
-            materialCost: undefined,
-            materialConsumed: false
-          }
-        }));
-        
-        allSpells.push(...pageResults);
-        hasMore = !!response.next;
-        page++;
-        
-        // Add small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        break; // Stop if there's an error
-      }
-    }
-    
-    // Filter spells by class
-    const filteredSpells = allSpells.filter(spell =>
-      spell.classes.some(cls => 
-        cls.toLowerCase().includes(className.toLowerCase())
-      )
-    );
-    
-    return filteredSpells.slice(0, 20); // Limit to 20 results for performance
-  }
+  /**
+   * Spells on a class's list. The class is resolved to a key within the scope
+   * first ("bard" is srd_bard for 2014 content, srd-2024_bard for 2024), then
+   * filtered server-side with classes__key.
+   */
+  async getSpellsByClass(className: string, options: {
+    level?: number;
+    maxLevel?: number;
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ class: string; classKey: string; count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
+    const cls = await this.findBaseClass(className, options.scope);
+    if (!cls) throw new Error(`Class "${className}" not found`);
 
-  async searchRaces(query?: string): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    if (query) params.search = query;
-    params.limit = 10; // Reduced from 50 to avoid timeouts
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/races/', params);
-
-    const transformedResults: EnhancedRaceData[] = response.results.map(race => {
-      const traits = race.traits || [];
-      
-      return {
-        // Current MCP format fields
-        name: race.name,
-        size: this.extractTraitValue(traits, 'size', 'Medium'),
-        speed: this.extractTraitValue(traits, 'speed', '30 feet'),
-        abilityScoreIncrease: this.extractTraitValue(traits, 'ability score'),
-        traits: traits.map((trait: any) => trait.name),
-        description: race.desc || '',
-        url: race.url,
-        
-        // Enhanced fields
-        isSubrace: race.is_subrace || false,
-        subraceOf: race.subrace_of,
-        detailedTraits: traits,
-        document: race.document
-      };
+    const spells = await this.searchSpells('', {
+      classKey: cls.key,
+      level: options.level,
+      maxLevel: options.maxLevel,
+      limit: options.limit ?? 20,
+      ordering: 'level',
+      scope: options.scope
     });
+    return { class: cls.name, classKey: cls.key, ...spells };
+  }
+
+  /** A base (non-subclass) class row by name or key, ranked like any lookup. */
+  private async findBaseClass(className: string, scope?: ContentScope): Promise<{ key: string; name: string } | null> {
+    const needle = className.trim().toLowerCase();
+    const { rows } = await this.query('classes', {
+      isSubclass: false,
+      documents: await this.scopeDocuments(scope)
+    }, { limit: PAGE_MAX });
+
+    const byKey = rows.find(row => row.key === needle);
+    if (byKey) return { key: byKey.key, name: byKey.name };
+
+    const best = pickByName(rows, needle, { nameOf: row => row.name, sourceKeyOf: documentKeyOf });
+    return best ? { key: best.key, name: best.name } : null;
+  }
+
+  async searchRaces(query?: string, options: {
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
+    const found = await this.findSpecies(query, options);
+    return { ...found, results: await Promise.all(found.results.map(race => this.resolveSpecies(race))) };
+  }
+
+  /** Species matching a name, plus the subspecies of matched parents; not yet resolved. */
+  private async findSpecies(query: string | undefined, options: {
+    limit?: number;
+    scope?: ContentScope;
+  }): Promise<{ count: number; results: EnhancedRaceData[]; hasMore: boolean }> {
+    const documents = await this.scopeDocuments(options.scope);
+    const response = await this.query('species', { name: query, documents }, {
+      limit: options.limit ?? 10 // kept small by default to avoid timeouts
+    });
+    const rows = response.rows;
+
+    // Subspecies names often omit the parent ("Lightfoot" for Halfling), so a
+    // name match alone misses them. Pull in the subspecies of every matched
+    // parent species.
+    const parentKeys = query
+      ? rows.filter(race => !race.is_subspecies && race.key).map(race => race.key as string)
+      : [];
+    const subspecies = await this.fetchSubspecies(parentKeys, documents);
+    const seen = new Set(rows.map(race => race.key));
+    const added = subspecies.filter(race => !seen.has(race.key));
 
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      count: response.count + added.length,
+      results: [...rows, ...added].map(race => this.transformRace(race)),
+      hasMore: response.hasMore
     };
   }
 
-  async getRaceDetails(raceName: string): Promise<EnhancedRaceData | null> {
-    const searchResults = await this.searchRaces(raceName);
-    
-    // Find exact or close match
-    const match = searchResults.results.find(
-      race => race.name.toLowerCase().includes(raceName.toLowerCase())
-    );
-    
-    return match || null;
+  /** Species whose parent is one of `parentKeys`. */
+  private async fetchSubspecies(parentKeys: string[], documents?: string[]): Promise<any[]> {
+    if (parentKeys.length === 0) return [];
+
+    const response = await this.query('species', { subspeciesOf: parentKeys, documents }, { limit: 50 });
+    return response.rows;
   }
 
-  async searchClasses(): Promise<{ count: number; results: EnhancedClassData[]; hasMore: boolean }> {
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/classes/');
-
-    const transformedResults: EnhancedClassData[] = response.results.map(cls => ({
-      // Current MCP format fields
-      name: cls.name,
-      hitDie: cls.hit_dice,
-      primaryAbility: this.extractPrimaryAbilities(cls),
-      savingThrows: cls.prof_saving_throws ? 
-        cls.prof_saving_throws.split(',').map((s: string) => s.trim()) : [],
-      description: cls.desc || '',
-      subclasses: cls.archetypes?.map((arch: any) => arch.name) || [],
-      url: cls.url,
-      
-      // Enhanced fields
-      hpAt1stLevel: cls.hp_at_1st_level,
-      hpAtHigherLevels: cls.hp_at_higher_levels,
-      proficiencies: {
-        armor: cls.prof_armor,
-        weapons: cls.prof_weapons,
-        tools: cls.prof_tools,
-        skills: cls.prof_skills
-      },
-      equipment: cls.equipment,
-      progressionTable: cls.table,
-      spellcastingAbility: cls.spellcasting_ability,
-      detailedArchetypes: cls.archetypes || []
-    }));
+  /** The row as Open5e gives it; resolveSpecies fills in what it inherits. */
+  private transformRace(race: any): EnhancedRaceData {
+    const traits = race.traits || [];
+    const size = this.findSpeciesTrait(traits, 'size');
+    const speed = this.findSpeciesTrait(traits, 'speed');
 
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      name: race.name,
+      key: race.key ?? '',
+      size: size || null,
+      speed: speed || null,
+      abilityScoreIncrease: this.findSpeciesTrait(traits, 'ability score increase'),
+      traits: traits.map((trait: any) => trait.name),
+      description: race.desc || '',
+      url: race.key ? `https://api.open5e.com/v2/species/${race.key}/` : '',
+      isSubrace: race.is_subspecies || false,
+      subraceOf: race.subspecies_of || undefined,
+      detailedTraits: traits,
+      source: sourceOf(race),
+      resolved: {
+        sizeCategories: parseSizeCategories(size),
+        walkingSpeed: parseWalkingSpeed(speed),
+        abilityScoreIncreases: { fixed: {}, choices: [] },
+        from: { size: null, speed: null, abilityScores: [] },
+        inheritedTraits: [],
+        unresolved: [],
+        notes: []
+      }
     };
   }
 
-  async getClassDetails(className: string): Promise<EnhancedClassData | null> {
-    try {
-      // Try direct lookup first
-      const response = await this.makeRequest<any>(`/v1/classes/${className.toLowerCase()}/`);
-      
-      return {
-        name: response.name,
-        hitDie: response.hit_dice,
-        primaryAbility: this.extractPrimaryAbilities(response),
-        savingThrows: response.prof_saving_throws ? 
-          response.prof_saving_throws.split(',').map((s: string) => s.trim()) : [],
-        description: response.desc || '',
-        subclasses: response.archetypes?.map((arch: any) => arch.name) || [],
-        url: response.url,
-        hpAt1stLevel: response.hp_at_1st_level,
-        hpAtHigherLevels: response.hp_at_higher_levels,
-        proficiencies: {
-          armor: response.prof_armor,
-          weapons: response.prof_weapons,
-          tools: response.prof_tools,
-          skills: response.prof_skills
+  /**
+   * Species traits are free text. Match on the trait's name (or its v2 `type`,
+   * e.g. SIZE/SPEED on srd-2024) -- never its description, which mentions
+   * "size" and "speed" in unrelated traits such as Halfling Nimbleness.
+   */
+  private findSpeciesTrait(traits: any[], traitName: string): string {
+    const wanted = traitName.toLowerCase();
+    const trait = traits.find(t => (t.name ?? '').toLowerCase() === wanted)
+      ?? traits.find(t => (t.type ?? '').toLowerCase() === wanted);
+    return trait?.desc ?? '';
+  }
+
+  /**
+   * Fills in what a species inherits. A subspecies takes size, speed and
+   * traits from its parent and adds its ability increases to the parent's.
+   * Where the parent defers ("determined by your Heritage Subrace"), size and
+   * speed come from the species a heritage or chassis names ("Halfling
+   * Heritage" -> Halfling). Whatever cannot be found is listed in
+   * `resolved.unresolved` and left null, never guessed.
+   */
+  private async resolveSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData> {
+    const parent = race.isSubrace && race.subraceOf ? await this.loadSpecies(race.subraceOf) : null;
+    const notes: string[] = [];
+    const unresolved: string[] = [];
+
+    if (race.isSubrace && race.subraceOf && !parent) {
+      unresolved.push(`parent species ${race.subraceOf} could not be loaded`);
+    }
+
+    // Size and speed: own value, else the parent's, else the origin species'.
+    const deferred = (text: string | null) => !text || isDeferredTrait(text);
+    let origin: EnhancedRaceData | null | undefined;
+    const originSpecies = async () => {
+      if (origin === undefined) origin = await this.findOriginSpecies(race);
+      return origin;
+    };
+
+    const pick = async (field: 'size' | 'speed') => {
+      for (const candidate of [race, parent]) {
+        if (candidate && !deferred(candidate[field])) return { text: candidate[field], from: candidate.key };
+      }
+      const fromOrigin = await originSpecies();
+      if (fromOrigin && !deferred(fromOrigin[field])) return { text: fromOrigin[field], from: fromOrigin.key };
+      return null;
+    };
+    const size = await pick('size');
+    const speed = await pick('speed');
+
+    const deferredTo = [race, parent].map(r => r?.size).find(text => text && isDeferredTrait(text));
+    if (!size) unresolved.push(deferredTo ? `size: ${deferredTo}` : 'size is not given');
+    if (!speed) unresolved.push('walking speed is not given');
+
+    // Ability increases add up down the chain; a parent's and a subspecies' both apply.
+    const chain = [parent, race].filter((r): r is EnhancedRaceData => r !== null);
+    const parsed = chain.map(r => ({ key: r.key, ...parseAbilityScoreIncreases(r.abilityScoreIncrease) }));
+    const increases = combineIncreases(...parsed);
+    const warnings = parsed.flatMap(p => p.warnings.map(w => `${p.key}: ${w}`));
+    if (race.source.ruleset === '5e-2024' && chain.every(r => !r.abilityScoreIncrease)) {
+      notes.push('In the 2024 rules, ability score increases come from the background, not the species.');
+    }
+
+    // Traits the parent grants that the subspecies does not restate.
+    const own = new Set(race.traits.map(name => name.toLowerCase()));
+    const handled = new Set(['size', 'speed', 'ability score increase']);
+    const inheritedTraits = (parent?.detailedTraits ?? [])
+      .filter(t => !own.has(t.name.toLowerCase()) && !handled.has(t.name.toLowerCase()))
+      .map(t => ({ name: t.name, desc: t.desc, from: parent!.key }));
+
+    return {
+      ...race,
+      size: size?.text ?? null,
+      speed: speed?.text ?? null,
+      resolved: {
+        sizeCategories: parseSizeCategories(size?.text),
+        walkingSpeed: parseWalkingSpeed(speed?.text),
+        abilityScoreIncreases: increases,
+        from: {
+          size: size?.from ?? null,
+          speed: speed?.from ?? null,
+          abilityScores: parsed
+            .filter(p => Object.keys(p.fixed).length > 0 || p.choices.length > 0)
+            .map(p => p.key)
         },
-        equipment: response.equipment,
-        progressionTable: response.table,
-        spellcastingAbility: response.spellcasting_ability,
-        detailedArchetypes: response.archetypes || []
-      };
+        inheritedTraits,
+        unresolved: [...unresolved, ...warnings],
+        notes
+      }
+    };
+  }
+
+  /** A species row by key, unresolved, or null if it cannot be fetched. */
+  private async loadSpecies(key: string): Promise<EnhancedRaceData | null> {
+    try {
+      const row = await this.makeRequest<any>(`/v2/species/${key}/`);
+      await this.embedDocuments([row]);
+      return this.transformRace(row);
     } catch (error) {
-      // Fallback to search
-      const searchResults = await this.searchClasses();
-      const match = searchResults.results.find(
-        cls => cls.name.toLowerCase() === className.toLowerCase()
-      );
-      
-      return match || null;
+      console.error(`Could not load species ${key}:`, error);
+      return null;
     }
   }
 
-  // New monster functionality
+  /**
+   * The species a heritage or chassis subspecies was before, searched within
+   * its own ruleset: "Elf/Shadow Fey Heritage" tries Elf, then Shadow Fey.
+   */
+  private async findOriginSpecies(race: EnhancedRaceData): Promise<EnhancedRaceData | null> {
+    const scope = race.source.ruleset ? { ruleset: race.source.ruleset } : undefined;
+    for (const name of originSpeciesNames(race.name)) {
+      const { results } = await this.findSpecies(name, { limit: 50, scope });
+      const best = pickByName(results.filter(r => !r.isSubrace && r.key !== race.subraceOf), name, {
+        nameOf: r => r.name,
+        sourceKeyOf: r => r.source.key
+      });
+      if (best && best.name.toLowerCase() === name.toLowerCase()) return best;
+    }
+    return null;
+  }
+
+  async getRaceDetails(raceName: string, scope?: ContentScope): Promise<EnhancedRaceData | null> {
+    const needle = raceName.trim().toLowerCase();
+    if (!needle) return null;
+
+    // Species keys ("srd_halfling") are not names, so fetch those directly.
+    if (Open5eClient.looksLikeKey(needle)) {
+      const race = await this.loadSpecies(needle);
+      if (race) return this.resolveSpecies(race);
+      // Not a key after all; fall back to a name search.
+    }
+
+    // Open5e holds several species with the same name ("Halfling" in both
+    // srd-2014 and srd-2024), plus subspecies and third-party entries whose
+    // names contain it ("Stoor Halfling", "Halfling Heritage"). Fetch enough
+    // rows that the exact match cannot be crowded out, then prefer a
+    // non-subspecies from the core SRD.
+    const { results } = await this.findSpecies(raceName.trim(), { limit: 50, scope });
+    const best = pickByName(results, needle, {
+      nameOf: race => race.name,
+      sourceKeyOf: race => race.source.key,
+      extraRank: race => [race.isSubrace ? 1 : 0]
+    });
+    return best ? this.resolveSpecies(best) : null;
+  }
+
+  /** Open5e keys are `<document>_<slug>`: "srd_halfling", "srd-2024_elf". */
+  private static looksLikeKey(value: string): boolean {
+    return /^[a-z0-9-]+_[a-z0-9-]+$/.test(value);
+  }
+
+  // Classes
+  async searchClasses(options: {
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedClassData[]; hasMore: boolean }> {
+    const documents = await this.scopeDocuments(options.scope);
+    const [base, subclasses] = await Promise.all([
+      this.query('classes', { isSubclass: false, documents }, { limit: PAGE_MAX }),
+      this.query('classes', { isSubclass: true, documents }, {
+        limit: PAGE_MAX, fields: ['key', 'name', 'subclass_of', 'document']
+      })
+    ]);
+
+    const results = base.rows.map(cls => this.transformClass(cls,
+      subclasses.rows.filter(sub => sub.subclass_of?.key === cls.key)));
+    return { count: base.count, results, hasMore: base.hasMore };
+  }
+
+  /**
+   * A class with its subclasses. `className` may be a name ("bard") or a key
+   * ("srd-2024_bard"); a name resolves within the scope, preferring the SRD.
+   */
+  async getClassDetails(className: string, scope?: ContentScope): Promise<EnhancedClassData | null> {
+    const found = await this.findBaseClass(className, scope);
+    if (!found) return null;
+
+    const [cls, subclasses] = await Promise.all([
+      this.makeRequest<any>(`/v2/classes/${found.key}/`),
+      this.query('classes', {
+        subclassOf: found.key,
+        documents: await this.scopeDocuments(scope)
+      }, { limit: PAGE_MAX })
+    ]);
+    await this.embedDocuments([cls]);
+    return this.transformClass(cls, subclasses.rows);
+  }
+
+  private transformClass(cls: any, subclassRows: any[]): EnhancedClassData {
+    const features: any[] = cls.features ?? [];
+    const source = sourceOf(cls);
+    const rules = classRulesFor(cls.name ?? '');
+    const traits = this.parseClassTraits(features);
+
+    const casterType: CasterType | null = rules?.casterType
+      ?? (typeof cls.caster_type === 'string' ? cls.caster_type.toLowerCase() as CasterType : null);
+    const ruleset: Ruleset = source.ruleset === '5e-2024' ? '5e-2024' : '5e-2014';
+
+    // Any feature carrying per-level data is a class table column; the 2014
+    // "Spells Known" column is mis-tagged as a level feature, so the type
+    // alone is not enough. Slot columns are left out: Open5e's 2014 ones have
+    // gaps, and the slots come from class-rules.ts instead.
+    const isColumn = (f: any) => (f.data_for_class_table ?? []).length > 0 && (f.gained_at ?? []).length === 0;
+    const tableColumns: Record<string, Record<number, string>> = {};
+    for (const feature of features) {
+      if (!isColumn(feature) || feature.feature_type === 'SPELL_SLOTS') continue;
+      tableColumns[feature.name] = Object.fromEntries(
+        (feature.data_for_class_table ?? []).map((cell: any) => [cell.level, cell.column_value]));
+    }
+
+    return {
+      name: cls.name,
+      key: cls.key ?? '',
+      hitDie: String(cls.hit_dice ?? '').toLowerCase(),
+      primaryAbility: rules ? keyAbilityList(rules) : this.parseAbilities(traits['primary ability']),
+      savingThrows: (cls.saving_throws ?? []).map((save: any) => save.name),
+      description: cls.desc || '',
+      subclasses: subclassRows.map(sub => sub.name),
+      source,
+      url: cls.key ? `https://api.open5e.com/v2/classes/${cls.key}/` : '',
+
+      hpAt1stLevel: cls.hit_points?.hit_points_at_1st_level,
+      hpAtHigherLevels: cls.hit_points?.hit_points_at_higher_levels,
+      proficiencies: {
+        armor: traits['armor'] ?? traits['armor training'],
+        weapons: traits['weapons'] ?? traits['weapon proficiencies'],
+        tools: traits['tools'] ?? traits['tool proficiencies'],
+        skills: traits['skills'] ?? traits['skill proficiencies']
+      },
+      equipment: traits['starting equipment']
+        ?? features.find(f => f.feature_type === 'STARTING_EQUIPMENT')?.desc,
+      spellcastingAbility: rules?.spellcastingAbility ?? undefined,
+      casterType,
+      spellSlotsByLevel: casterType && casterType !== 'none'
+        ? Array.from({ length: 20 }, (_, i) => spellSlots(casterType, i + 1, ruleset).byLevel)
+        : null,
+      features: features
+        .filter(f => f.feature_type === 'CLASS_LEVEL_FEATURE' && !isColumn(f))
+        .map(f => this.transformClassFeature(f))
+        .sort((a, b) => (a.levels[0] ?? 0) - (b.levels[0] ?? 0) || a.name.localeCompare(b.name)),
+      tableColumns,
+      detailedArchetypes: subclassRows.map(sub => ({
+        name: sub.name,
+        key: sub.key ?? '',
+        desc: sub.desc ?? '',
+        source: sourceOf(sub),
+        features: (sub.features ?? [])
+          .map((f: any) => this.transformClassFeature(f))
+          .sort((a: ClassFeature, b: ClassFeature) => (a.levels[0] ?? 0) - (b.levels[0] ?? 0))
+      }))
+    };
+  }
+
+  private transformClassFeature(feature: any): ClassFeature {
+    const gained: Array<{ level: number; detail: string | null }> = feature.gained_at ?? [];
+    return {
+      name: feature.name,
+      key: feature.key ?? '',
+      levels: gained.map(g => g.level).sort((a, b) => a - b),
+      details: Object.fromEntries(gained.filter(g => g.detail).map(g => [g.level, g.detail as string])),
+      description: feature.desc ?? ''
+    };
+  }
+
+  /**
+   * Proficiencies and other core traits, keyed by lower-cased label. 2014
+   * classes give them as "**Armor:** Light armor" lines in a PROFICIENCIES
+   * feature; 2024 classes as "|Armor Training|Light armor|" table rows.
+   */
+  private parseClassTraits(features: any[]): Record<string, string> {
+    const traits: Record<string, string> = {};
+    for (const feature of features) {
+      if (!['PROFICIENCIES', 'CORE_TRAITS_TABLE'].includes(feature.feature_type)) continue;
+      for (const line of String(feature.desc ?? '').split(/\r?\n/)) {
+        const bold = /^\*\*(.+?):\*\*\s*(.+)$/.exec(line.trim());
+        const row = /^\|([^|]+)\|([^|]+)\|$/.exec(line.trim());
+        const [label, value] = bold ? [bold[1], bold[2]] : row ? [row[1], row[2]] : [];
+        if (label && value && !/^-+$/.test(label.trim())) {
+          traits[label.trim().toLowerCase()] = value.trim();
+        }
+      }
+    }
+    return traits;
+  }
+
+  /** "Strength or Dexterity" -> ['strength', 'dexterity']. */
+  private parseAbilities(text?: string): string[] {
+    if (!text) return [];
+    return ABILITIES.filter(ability => text.toLowerCase().includes(ability));
+  }
+
+  // Monsters
   async searchMonsters(query?: string, options: {
     cr?: number;
+    minCr?: number;
+    maxCr?: number;
+    /** One creature type key ("dragon"); an unknown type is an error upstream. */
+    type?: string;
+    /** Any of several types, matched locally. */
+    types?: string[];
+    environment?: string;
     limit?: number;
-    documentSlug?: string;
+    ordering?: string;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.cr !== undefined) params.cr = options.cr;
-    if (options.limit) params.limit = options.limit;
-    if (options.documentSlug) params.document__slug = options.documentSlug;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/monsters/', params);
-
-    const transformedResults: MonsterData[] = response.results.map(monster => ({
-      name: monster.name,
-      size: monster.size,
-      type: monster.type,
-      alignment: monster.alignment,
-      armorClass: monster.armor_class,
-      hitPoints: monster.hit_points,
-      hitDice: monster.hit_dice,
-      speed: monster.speed,
-      abilities: {
-        strength: monster.strength,
-        dexterity: monster.dexterity,
-        constitution: monster.constitution,
-        intelligence: monster.intelligence,
-        wisdom: monster.wisdom,
-        charisma: monster.charisma
-      },
-      savingThrows: monster.saving_throws,
-      skills: monster.skills,
-      damageResistances: monster.damage_resistances,
-      damageImmunities: monster.damage_immunities,
-      conditionImmunities: monster.condition_immunities,
-      senses: monster.senses,
-      languages: monster.languages,
-      challengeRating: monster.challenge_rating,
-      actions: monster.actions || [],
-      specialAbilities: monster.special_abilities || [],
-      reactions: monster.reactions || [],
-      legendaryActions: monster.legendary_actions || [],
-      description: monster.desc,
-      url: monster.url
-    }));
+    const response = await this.query('creatures', {
+      name: query,
+      cr: options.cr,
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      type: options.type,
+      types: options.types,
+      environment: options.environment,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, ordering: options.ordering });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(monster => this.transformMonster(monster)),
+      hasMore: response.hasMore
     };
   }
 
-  async getMonstersByCR(challengeRating: number): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
-    return this.searchMonsters('', { cr: challengeRating, limit: 20 });
+  async getMonstersByCR(challengeRating: number, scope?: ContentScope): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
+    return this.searchMonsters('', { cr: challengeRating, limit: 20, scope });
   }
 
-  // New weapon functionality
+  /** Monsters within a CR range, lowest CR first. */
+  async getMonstersByCRRange(options: {
+    minCr: number;
+    maxCr: number;
+    environment?: string;
+    types?: string[];
+    limit?: number;
+    scope?: ContentScope;
+  }): Promise<{ count: number; results: MonsterData[]; hasMore: boolean }> {
+    if (options.minCr > options.maxCr) {
+      throw new Error(`min_cr (${options.minCr}) is greater than max_cr (${options.maxCr})`);
+    }
+    return this.searchMonsters('', {
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      environment: options.environment,
+      types: options.types,
+      limit: options.limit ?? 50,
+      ordering: 'challenge_rating',
+      scope: options.scope
+    });
+  }
+
+  /** "1/8", "1/4", "1/2" for fractional CRs, as the DMG writes them. */
+  private formatChallengeRating(value: unknown): string {
+    const cr = Number(value);
+    if (!Number.isFinite(cr)) return String(value ?? '');
+    const fractions: Record<number, string> = { 0.125: '1/8', 0.25: '1/4', 0.5: '1/2' };
+    return fractions[cr] ?? String(cr);
+  }
+
+  private transformMonster(monster: any): MonsterData {
+    const actions: any[] = monster.actions ?? [];
+    const ofType = (type: string) => actions
+      .filter(action => action.action_type === type)
+      .map(action => ({
+        name: action.name,
+        desc: action.desc,
+        ...(type === 'LEGENDARY_ACTION' && action.legendary_action_cost ? { cost: action.legendary_action_cost } : {})
+      }));
+
+    const speed: Record<string, number | string | boolean> = {};
+    for (const [mode, value] of Object.entries(monster.speed ?? {})) {
+      if (value !== 0 && value !== false && value !== null) speed[mode] = value as any;
+    }
+
+    const senses = [
+      ['blindsight', monster.blindsight_range],
+      ['darkvision', monster.darkvision_range],
+      ['tremorsense', monster.tremorsense_range],
+      ['truesight', monster.truesight_range]
+    ].filter(([, range]) => range).map(([sense, range]) => `${sense} ${range} ft.`);
+    if (monster.passive_perception != null) senses.push(`passive Perception ${monster.passive_perception}`);
+
+    const defences = monster.resistances_and_immunities ?? {};
+
+    return {
+      name: monster.name,
+      key: monster.key ?? '',
+      size: monster.size?.name ?? '',
+      type: monster.type?.name ?? '',
+      subcategory: monster.subcategory || undefined,
+      alignment: monster.alignment ?? '',
+      armorClass: monster.armor_class,
+      armorDetail: monster.armor_detail || undefined,
+      hitPoints: monster.hit_points,
+      hitDice: monster.hit_dice ?? '',
+      speed,
+      abilities: {
+        strength: monster.ability_scores?.strength,
+        dexterity: monster.ability_scores?.dexterity,
+        constitution: monster.ability_scores?.constitution,
+        intelligence: monster.ability_scores?.intelligence,
+        wisdom: monster.ability_scores?.wisdom,
+        charisma: monster.ability_scores?.charisma
+      },
+      savingThrows: monster.saving_throws ?? {},
+      skills: monster.skill_bonuses ?? {},
+      damageVulnerabilities: defences.damage_vulnerabilities_display || undefined,
+      damageResistances: defences.damage_resistances_display || undefined,
+      damageImmunities: defences.damage_immunities_display || undefined,
+      conditionImmunities: defences.condition_immunities_display || undefined,
+      senses: senses.join(', '),
+      languages: monster.languages?.as_string ?? '',
+      challengeRating: this.formatChallengeRating(monster.challenge_rating),
+      experiencePoints: monster.experience_points,
+      actions: ofType('ACTION'),
+      bonusActions: ofType('BONUS_ACTION'),
+      reactions: ofType('REACTION'),
+      legendaryActions: ofType('LEGENDARY_ACTION'),
+      specialAbilities: (monster.traits ?? []).map((trait: any) => ({ name: trait.name, desc: trait.desc })),
+      environments: (monster.environments ?? []).map((env: any) => env.name),
+      source: sourceOf(monster),
+      url: monster.key ? `https://api.open5e.com/v2/creatures/${monster.key}/` : ''
+    };
+  }
+
+  // Weapons
   async searchWeapons(query?: string, options: {
     isMartial?: boolean;
     isFinesse?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: WeaponData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.isMartial !== undefined) params.is_martial = options.isMartial;
-    if (options.isFinesse !== undefined) params.is_finesse = options.isFinesse;
-    if (options.limit) params.limit = options.limit;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/weapons/', params);
-
-    const transformedResults: WeaponData[] = response.results.map(weapon => ({
-      name: weapon.name,
-      damageDice: weapon.damage_dice,
-      damageType: weapon.damage_type,
-      range: weapon.range,
-      properties: {
-        martial: weapon.is_martial || false,
-        melee: weapon.is_melee || false,
-        ranged: weapon.is_ranged || false,
-        finesse: weapon.is_finesse || false,
-        light: weapon.is_light || false,
-        heavy: weapon.is_heavy || false,
-        twoHanded: weapon.is_two_handed || false,
-        versatile: weapon.is_versatile || false
-      },
-      url: weapon.url
-    }));
+    const response = await this.query('weapons', {
+      name: query,
+      martial: options.isMartial,
+      finesse: options.isFinesse,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(weapon => this.transformWeapon(weapon)),
+      hasMore: response.hasMore
     };
   }
 
-  // Magic Items functionality
+  /**
+   * v2 weapons have no melee/martial/finesse booleans -- only `is_simple`, a
+   * range and a list of named properties -- so the flags are derived here.
+   */
+  private transformWeapon(weapon: any): WeaponData {
+    const properties: Array<{ name: string; detail: string | null }> =
+      (weapon.properties ?? []).map((p: any) => ({ name: p.property?.name ?? '', detail: p.detail ?? null }));
+    const has = (propertyName: string) =>
+      properties.some(p => p.name.toLowerCase() === propertyName.toLowerCase());
+
+    const thrown = has('Thrown');
+    const ranged = (weapon.range ?? 0) > 0 && !thrown;
+    const unit = weapon.distance_unit || 'feet';
+
+    return {
+      name: weapon.name,
+      key: weapon.key ?? '',
+      category: weapon.is_simple ? 'simple' : 'martial',
+      damageDice: weapon.damage_dice,
+      damageType: weapon.damage_type?.name,
+      range: weapon.range > 0 ? `${weapon.range}/${weapon.long_range} ${unit}` : undefined,
+      properties: {
+        martial: !weapon.is_simple,
+        melee: !ranged,
+        ranged: ranged || thrown,
+        finesse: has('Finesse'),
+        light: has('Light'),
+        heavy: has('Heavy'),
+        twoHanded: has('Two-Handed'),
+        versatile: has('Versatile'),
+        thrown
+      },
+      propertyNames: properties.map(p => p.detail ? `${p.name} (${p.detail})` : p.name),
+      source: sourceOf(weapon),
+      url: weapon.key ? `https://api.open5e.com/v2/weapons/${weapon.key}/` : ''
+    };
+  }
+
+  // Magic items
   async searchMagicItems(query?: string, options: {
+    /** A rarity key or name: "very-rare", "Very Rare". */
     rarity?: string;
+    /** An item category key or name: "wondrous-item", "Wondrous Item". */
     type?: string;
     requiresAttunement?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: MagicItemData[]; hasMore: boolean }> {
-    // Validate inputs
-    if (query && typeof query !== 'string') {
-      throw new Error('Search query must be a string');
-    }
-    if (options.limit && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 50)) {
-      throw new Error('Limit must be an integer between 1 and 50');
-    }
+    const response = await this.query('magicitems', {
+      name: query,
+      rarity: options.rarity,
+      category: options.type,
+      requiresAttunement: options.requiresAttunement,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.rarity) params.rarity = options.rarity;
-    if (options.type) params.type = options.type;
-    if (options.requiresAttunement !== undefined) {
-      params.requires_attunement = options.requiresAttunement ? 'true' : 'false';
-    }
-    if (options.limit) params.limit = options.limit;
+    const results: MagicItemData[] = response.rows.map(item => ({
+      name: item.name,
+      key: item.key ?? '',
+      type: item.category?.name ?? '',
+      description: item.desc ?? '',
+      rarity: item.rarity?.name ?? '',
+      requiresAttunement: Boolean(item.requires_attunement),
+      attunementDetail: item.attunement_detail || undefined,
+      source: sourceOf(item),
+      url: item.key ? `https://api.open5e.com/v2/magicitems/${item.key}/` : ''
+    }));
 
-    try {
-      const response = await this.makeRequest<Open5eResponse<any>>('/v1/magicitems/', params);
-
-      const transformedResults: MagicItemData[] = response.results
-        .filter(item => this.validateMagicItem(item))
-        .map(item => ({
-          name: item.name || 'Unknown Item',
-          type: item.type || 'Unknown Type',
-          description: item.desc || 'No description available',
-          rarity: item.rarity || 'unknown',
-          requiresAttunement: item.requires_attunement || 'No',
-          document: {
-            slug: item.document__slug || '',
-            title: item.document__title || 'Unknown Source',
-            url: item.document__url || ''
-          },
-          url: item.slug ? `https://api.open5e.com/v1/magicitems/${item.slug}/` : ''
-        }));
-
-      return {
-        count: response.count || 0,
-        results: transformedResults,
-        hasMore: !!response.next
-      };
-    } catch (error) {
-      throw new Error(`Failed to search magic items: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  private validateMagicItem(item: any): boolean {
-    return item && typeof item === 'object' && 
-           (item.name || item.slug) && 
-           typeof item.name === 'string';
+  async getMagicItemDetails(itemName: string, scope?: ContentScope): Promise<MagicItemData | null> {
+    const { results } = await this.searchMagicItems(itemName, { limit: 50, scope });
+    return this.pickResult(results, itemName);
   }
 
-  async getMagicItemDetails(itemName: string): Promise<MagicItemData | null> {
-    // Search for the magic item first
-    const searchResults = await this.searchMagicItems(itemName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      item => item.name.toLowerCase() === itemName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
-  }
-
-  // Armor functionality
+  // Armor
   async searchArmor(query?: string, options: {
     category?: string;
     acBase?: number;
     stealthDisadvantage?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: ArmorData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.category) params.category = options.category;
-    if (options.acBase !== undefined) params.ac_base = options.acBase;
-    if (options.stealthDisadvantage !== undefined) {
-      params.grants_stealth_disadvantage = options.stealthDisadvantage;
-    }
-    if (options.limit) params.limit = options.limit;
+    const response = await this.query('armor', {
+      name: query,
+      category: options.category,
+      acBase: options.acBase,
+      stealthDisadvantage: options.stealthDisadvantage,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/armor/', params);
-
-    const transformedResults: ArmorData[] = response.results.map(armor => ({
+    const results: ArmorData[] = response.rows.map(armor => ({
       name: armor.name,
+      key: armor.key ?? '',
       category: armor.category,
       acDisplay: armor.ac_display,
       acBase: armor.ac_base,
@@ -970,338 +1476,188 @@ export class Open5eClient {
       acCapDexMod: armor.ac_cap_dexmod,
       grantsStealthDisadvantage: armor.grants_stealth_disadvantage,
       strengthScoreRequired: armor.strength_score_required,
-      document: armor.document,
-      url: armor.url
+      source: sourceOf(armor),
+      url: armor.key ? `https://api.open5e.com/v2/armor/${armor.key}/` : ''
     }));
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getArmorDetails(armorName: string): Promise<ArmorData | null> {
-    // Search for the armor first
-    const searchResults = await this.searchArmor(armorName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      armor => armor.name.toLowerCase() === armorName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getArmorDetails(armorName: string, scope?: ContentScope): Promise<ArmorData | null> {
+    const { results } = await this.searchArmor(armorName, { scope });
+    return this.pickResult(results, armorName);
   }
 
-  // Feats functionality
+  /** The best-named result, preferring core SRD sources (see pickByName). */
+  private pickResult<T extends { name: string; source: SourceLabel }>(rows: T[], name: string): T | null {
+    return pickByName(rows, name, { nameOf: row => row.name, sourceKeyOf: row => row.source.key });
+  }
+
+  // Feats
   async searchFeats(query?: string, options: {
     hasPrerequisite?: boolean;
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: FeatData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.hasPrerequisite !== undefined) {
-      params.has_prerequisite = options.hasPrerequisite;
-    }
-    if (options.limit) params.limit = options.limit;
+    const response = await this.query('feats', {
+      name: query,
+      hasPrerequisite: options.hasPrerequisite,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/feats/', params);
-
-    const transformedResults: FeatData[] = response.results.map(feat => ({
+    const results: FeatData[] = response.rows.map(feat => ({
       name: feat.name,
-      description: feat.desc,
-      prerequisite: feat.prerequisite,
-      hasPrerequisite: feat.has_prerequisite,
+      key: feat.key ?? '',
+      description: feat.desc ?? '',
+      prerequisite: feat.prerequisite ?? '',
+      hasPrerequisite: Boolean(feat.has_prerequisite),
+      type: feat.type ?? '',
       benefits: feat.benefits || [],
-      document: feat.document,
-      url: feat.url
+      source: sourceOf(feat),
+      url: feat.key ? `https://api.open5e.com/v2/feats/${feat.key}/` : ''
     }));
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getFeatDetails(featName: string): Promise<FeatData | null> {
-    // Search for the feat first
-    const searchResults = await this.searchFeats(featName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      feat => feat.name.toLowerCase() === featName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getFeatDetails(featName: string, scope?: ContentScope): Promise<FeatData | null> {
+    const { results } = await this.searchFeats(featName, { limit: 50, scope });
+    return this.pickResult(results, featName);
   }
 
-  // Conditions functionality
+  // Conditions
   async searchConditions(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: ConditionData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.limit) params.limit = options.limit;
+    // A ruleset selects conditions by their per-ruleset descriptions, not by
+    // document: the 2014 and 2024 wordings share one "core" row (see
+    // ENDPOINTS.conditions). Sources still filter by document.
+    const ruleset = options.scope?.ruleset;
+    const sourcesOnly = options.scope?.sources ? { sources: options.scope.sources } : undefined;
+    if (ruleset !== undefined) await this.scopeDocuments({ ruleset }); // validates the name
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/conditions/', params);
+    const response = await this.query('conditions', {
+      name: query,
+      ruleset,
+      documents: await this.scopeDocuments(sourcesOnly)
+    }, { limit: options.limit });
 
-    const transformedResults: ConditionData[] = response.results.map(condition => ({
-      name: condition.name,
-      description: condition.desc,
-      document: condition.document,
-      url: condition.url
-    }));
+    const results: ConditionData[] = response.rows.map(condition => {
+      const descriptions: Record<string, string> = {};
+      for (const entry of condition.descriptions ?? []) {
+        if (entry?.gamesystem && typeof entry.desc === 'string') descriptions[entry.gamesystem] = entry.desc;
+      }
+      const chosen = [ruleset, '5e-2014', '5e-2024', ...Object.keys(descriptions)]
+        .find(system => system !== undefined && system in descriptions) ?? null;
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+      return {
+        name: condition.name,
+        key: condition.key ?? '',
+        description: chosen ? descriptions[chosen] : '',
+        ruleset: chosen,
+        descriptions,
+        source: sourceOf(condition),
+        url: condition.key ? `https://api.open5e.com/v2/conditions/${condition.key}/` : ''
+      };
+    });
+
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getConditionDetails(conditionName: string): Promise<ConditionData | null> {
-    // Search for the condition first
-    const searchResults = await this.searchConditions(conditionName, { limit: 20 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      condition => condition.name.toLowerCase() === conditionName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async getConditionDetails(conditionName: string, scope?: ContentScope): Promise<ConditionData | null> {
+    const { results } = await this.searchConditions(conditionName, { scope });
+    return this.pickResult(results, conditionName);
   }
 
-  async getAllConditions(): Promise<ConditionData[]> {
-    // Get all conditions for quick reference
-    const response = await this.searchConditions('', { limit: 50 });
-    return response.results;
+  async getAllConditions(scope?: ContentScope): Promise<ConditionData[]> {
+    return (await this.searchConditions('', { scope })).results;
   }
 
-  // Backgrounds functionality
+  // Backgrounds
   async searchBackgrounds(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: BackgroundData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.limit) params.limit = options.limit;
+    const response = await this.query('backgrounds', {
+      name: query,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit });
 
-    const response = await this.makeRequest<Open5eResponse<any>>('/v2/backgrounds/', params);
-
-    const transformedResults: BackgroundData[] = response.results.map(background => {
-      // Extract specific benefit types
+    const results: BackgroundData[] = response.rows.map(background => {
       const benefits = background.benefits || [];
-      
-      const getBenefit = (type: string): string => {
-        const benefit = benefits.find((b: any) => b.type === type);
-        return benefit ? benefit.desc : '';
-      };
-
-      const getFeature = (): string => {
-        const feature = benefits.find((b: any) => b.type === 'feature');
-        return feature ? feature.desc : '';
-      };
+      const getBenefit = (...types: string[]): string =>
+        benefits.find((b: any) => types.includes(b.type))?.desc ?? '';
 
       return {
         name: background.name,
         description: background.desc || 'No description available',
         key: background.key,
-        benefits: benefits,
-        abilityScoreIncrease: getBenefit('ability_score') || getBenefit('ability_score_increases') || '',
-        skillProficiencies: getBenefit('skill_proficiency') || getBenefit('skill_proficiencies') || '',
-        toolProficiencies: getBenefit('tool_proficiency') || getBenefit('tool_proficiencies') || '',
-        languages: getBenefit('language') || getBenefit('languages') || '',
-        equipment: getBenefit('equipment') || getBenefit('suggested_equipment') || '',
-        feature: getFeature(),
-        document: background.document,
-        url: background.url
+        benefits,
+        abilityScoreIncrease: getBenefit('ability_score', 'ability_score_increases'),
+        skillProficiencies: getBenefit('skill_proficiency', 'skill_proficiencies'),
+        toolProficiencies: getBenefit('tool_proficiency', 'tool_proficiencies'),
+        languages: getBenefit('language', 'languages'),
+        equipment: getBenefit('equipment', 'suggested_equipment'),
+        feature: getBenefit('feature'),
+        source: sourceOf(background),
+        url: background.key ? `https://api.open5e.com/v2/backgrounds/${background.key}/` : ''
       };
     });
 
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
+    return { count: response.count, results, hasMore: response.hasMore };
   }
 
-  async getBackgroundDetails(backgroundName: string): Promise<BackgroundData | null> {
-    // First try to get all backgrounds and find exact match
-    const allResults = await this.searchBackgrounds('', { limit: 100 });
-    
-    // Find exact match first
-    const exactMatch = allResults.results.find(
-      background => background.name.toLowerCase() === backgroundName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match
-    const partialMatch = allResults.results.find(
-      background => background.name.toLowerCase().includes(backgroundName.toLowerCase())
-    );
-    
-    return partialMatch || null;
+  async getBackgroundDetails(backgroundName: string, scope?: ContentScope): Promise<BackgroundData | null> {
+    const { results } = await this.searchBackgrounds(backgroundName, { limit: 50, scope });
+    return this.pickResult(results, backgroundName);
   }
 
-  // Rules Sections functionality
+  // Rules sections
+  /**
+   * Rules text from /v2/rules/. A query matches names and rules prose, since
+   * a rule is usually looked up by what it covers; /v2/rules/ ignores both
+   * `search` and `desc__icontains`, so the text is matched locally.
+   */
   async searchSections(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: SectionData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.limit) params.limit = options.limit;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/sections/', params);
-
-    const transformedResults: SectionData[] = response.results.map(section => ({
-      slug: section.slug,
-      name: section.name,
-      description: section.desc || 'No description available',
-      parent: section.parent,
-      document: section.document,
-      url: `https://api.open5e.com/v1/sections/${section.slug}/`
-    }));
+    const response = await this.query('rules', {
+      text: query,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, all: true });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(rule => this.transformSection(rule)),
+      hasMore: response.hasMore
     };
   }
 
-  async getSectionDetails(sectionName: string): Promise<SectionData | null> {
-    // First try to get all sections and find exact match
-    const allResults = await this.searchSections('', { limit: 100 });
-    
-    // Find exact match first (by name or slug)
-    const exactMatch = allResults.results.find(
-      section => section.name.toLowerCase() === sectionName.toLowerCase() ||
-                 section.slug.toLowerCase() === sectionName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match by name
-    const partialMatch = allResults.results.find(
-      section => section.name.toLowerCase().includes(sectionName.toLowerCase())
-    );
-    
-    return partialMatch || null;
-  }
-
-  async getAllSections(): Promise<SectionData[]> {
-    // Get all sections for quick reference
-    const response = await this.searchSections('', { limit: 100 });
-    return response.results;
-  }
-
-  // Spell Lists functionality
-  async searchSpellLists(query?: string, options: {
-    limit?: number;
-  } = {}): Promise<{ count: number; results: SpellListData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;
-    if (options.limit) params.limit = options.limit;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/spelllist/', params);
-
-    const transformedResults: SpellListData[] = response.results.map(spellList => ({
-      slug: spellList.slug,
-      name: spellList.name || spellList.slug.charAt(0).toUpperCase() + spellList.slug.slice(1),
-      description: spellList.desc || `Spell list for ${spellList.name || spellList.slug} class`,
-      spells: spellList.spells || [],
-      spellCount: (spellList.spells || []).length,
-      document: {
-        slug: spellList.document__slug || '',
-        title: spellList.document__title || 'Unknown Source',
-        url: spellList.document__url || ''
-      },
-      url: `https://api.open5e.com/v1/spelllist/${spellList.slug}/`
-    }));
-
+  private transformSection(rule: any): SectionData {
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      key: rule.key ?? '',
+      name: rule.name,
+      description: rule.desc || 'No description available',
+      parent: rule.ruleset || undefined,
+      source: sourceOf(rule),
+      url: rule.key ? `https://api.open5e.com/v2/rules/${rule.key}/` : ''
     };
   }
 
-  async getSpellListDetails(className: string): Promise<SpellListData | null> {
-    // Get all spell lists and find match
-    const allResults = await this.searchSpellLists('', { limit: 20 });
-    
-    // Find exact match first (by name or slug)
-    const exactMatch = allResults.results.find(
-      spellList => spellList.name.toLowerCase() === className.toLowerCase() ||
-                   spellList.slug.toLowerCase() === className.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match by name
-    const partialMatch = allResults.results.find(
-      spellList => spellList.name.toLowerCase().includes(className.toLowerCase())
-    );
-    
-    return partialMatch || null;
+  /** A rules section by key, or by name ranked like any other lookup. */
+  async getSectionDetails(sectionName: string, scope?: ContentScope): Promise<SectionData | null> {
+    const needle = sectionName.trim().toLowerCase();
+    const { results } = await this.searchSections('', { scope });
+    return results.find(section => section.key.toLowerCase() === needle)
+      ?? this.pickResult(results, needle);
   }
 
-  async getAllSpellLists(): Promise<SpellListData[]> {
-    // Get all spell lists for quick reference
-    const response = await this.searchSpellLists('', { limit: 20 });
-    return response.results;
-  }
-
-  async getSpellsForClass(className: string): Promise<EnhancedSpellData[]> {
-    // Get the spell list for the class
-    const spellList = await this.getSpellListDetails(className);
-    
-    if (!spellList || spellList.spells.length === 0) {
-      return [];
-    }
-
-    // Get detailed spell information for each spell in the list
-    const spellPromises = spellList.spells.slice(0, 50).map(async (spellSlug) => {
-      try {
-        // Convert slug to search term
-        const searchTerm = spellSlug.replace(/-/g, ' ');
-        const spellDetails = await this.getSpellDetails(searchTerm);
-        return spellDetails;
-      } catch (error) {
-        console.warn(`Failed to get details for spell: ${spellSlug}`);
-        return null;
-      }
-    });
-
-    const spellResults = await Promise.all(spellPromises);
-    return spellResults.filter(spell => spell !== null) as EnhancedSpellData[];
+  /** Every rules section's name, key and parent -- the text itself is left out. */
+  async getAllSections(scope?: ContentScope): Promise<SectionSummary[]> {
+    const { results } = await this.searchSections('', { scope });
+    return results.map(({ key, name, parent, source }) => ({ key, name, parent, source }));
   }
 
   // DM Encounter Builder functionality
@@ -1311,7 +1667,8 @@ export class Open5eClient {
     '6': 2300, '7': 2900, '8': 3900, '9': 5000, '10': 5900,
     '11': 7200, '12': 8400, '13': 10000, '14': 11500, '15': 13000,
     '16': 15000, '17': 18000, '18': 20000, '19': 22000, '20': 25000,
-    '21': 33000, '22': 41000, '23': 50000, '24': 62000, '30': 155000
+    '21': 33000, '22': 41000, '23': 50000, '24': 62000, '25': 75000,
+    '26': 90000, '27': 105000, '28': 120000, '29': 135000, '30': 155000
   };
 
   private readonly ENCOUNTER_THRESHOLDS: Record<number, Record<string, number>> = {
@@ -1337,9 +1694,20 @@ export class Open5eClient {
     20: { easy: 2800, medium: 5700, hard: 8500, deadly: 12700 }
   };
 
+  /** DMG p.274 XP for a challenge rating written as "1/4" or "5"; throws on an unknown CR. */
+  xpForChallengeRating(cr: string): number {
+    const xp = this.CR_TO_XP[cr.trim()];
+    if (xp === undefined) {
+      throw new Error(`Unknown challenge rating "${cr}". Use 0, 1/8, 1/4, 1/2 or 1-30`);
+    }
+    return xp;
+  }
+
+  // DMG p.82 encounter multipliers, keyed by number of monsters:
+  // 1 -> x1, 2 -> x1.5, 3-6 -> x2, 7-10 -> x2.5, 11-14 -> x3, 15+ -> x4.
   private readonly XP_MULTIPLIERS: Record<number, number> = {
-    1: 1, 2: 1.5, 3: 2, 4: 2, 5: 2.5, 6: 2.5, 7: 3,
-    8: 3, 9: 3.5, 10: 3.5, 11: 4, 12: 4, 13: 4.5, 14: 4.5, 15: 5
+    1: 1, 2: 1.5, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2.5,
+    8: 2.5, 9: 2.5, 10: 2.5, 11: 3, 12: 3, 13: 3, 14: 3, 15: 4
   };
 
   async buildRandomEncounter(options: EncounterBuilderOptions): Promise<EncounterData> {
@@ -1355,7 +1723,9 @@ export class Open5eClient {
     const totalBudget = budgetPerCharacter * partySize;
     
     // Get monsters within CR range
-    const monsters = await this.getMonstersByCRRange(minCR, maxCR, environment, options.monsterTypes);
+    const monsters = await this.sampleMonstersByCR({
+      minCr: minCR, maxCr: maxCR, environment, types: options.monsterTypes, scope: options.scope
+    });
     
     if (monsters.length === 0) {
       throw new Error('No monsters found matching criteria');
@@ -1367,7 +1737,7 @@ export class Open5eClient {
     // Calculate XP values
     const totalXP = encounterMonsters.reduce((sum, em) => sum + em.totalXP, 0);
     const monsterCount = encounterMonsters.reduce((sum, em) => sum + em.count, 0);
-    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] || 5;
+    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] ?? 1;
     const adjustedXP = Math.floor(totalXP * multiplier);
     
     // Generate encounter data
@@ -1389,46 +1759,39 @@ export class Open5eClient {
     return encounter;
   }
 
-  private async getMonstersByCRRange(minCR: number, maxCR: number, environment?: string, types?: string[]): Promise<MonsterData[]> {
-    const allMonsters: MonsterData[] = [];
-    
-    // Iterate through CR range and fetch monsters
-    for (let cr = minCR; cr <= maxCR; cr++) {
-      try {
-        // Handle CR 0 specially - get fractional CRs instead
-        if (cr === 0) {
-          const fractions = ['1/8', '1/4', '1/2'];
-          for (const fraction of fractions) {
-            const fracResults = await this.searchMonsters('', { cr: fraction as any, limit: 50 });
-            allMonsters.push(...fracResults.results);
-          }
-        } else {
-          const results = await this.searchMonsters('', { cr: cr, limit: 50 });
-          allMonsters.push(...results.results);
-        }
-      } catch (error) {
-        console.warn(`Failed to fetch monsters for CR ${cr}:`, error);
-      }
+  /**
+   * A random sample of the monsters in a CR range. The whole range is scanned
+   * as a sparse fieldset and the sample drawn from all of it, so an encounter
+   * is not limited to whichever monsters sort first alphabetically.
+   */
+  private async sampleMonstersByCR(options: {
+    minCr: number;
+    maxCr: number;
+    environment?: string;
+    types?: string[];
+    scope?: ContentScope;
+  }, sampleSize: number = Open5eClient.ENCOUNTER_SAMPLE_SIZE): Promise<MonsterData[]> {
+    const candidates = await this.query('creatures', {
+      minCr: options.minCr,
+      maxCr: options.maxCr,
+      environment: options.environment,
+      types: options.types,
+      documents: await this.scopeDocuments(options.scope)
+    }, { all: true, fields: ['key'] });
+
+    const keys = candidates.rows.map(row => row.key as string);
+    for (let i = keys.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [keys[i], keys[j]] = [keys[j], keys[i]];
     }
-    
-    // Filter by environment and type if specified
-    let filteredMonsters = allMonsters;
-    
-    if (environment) {
-      filteredMonsters = filteredMonsters.filter(monster => 
-        monster.description?.toLowerCase().includes(environment.toLowerCase()) ||
-        monster.type.toLowerCase().includes(environment.toLowerCase())
-      );
-    }
-    
-    if (types && types.length > 0) {
-      filteredMonsters = filteredMonsters.filter(monster =>
-        types.some(type => monster.type.toLowerCase().includes(type.toLowerCase()))
-      );
-    }
-    
-    return filteredMonsters;
+
+    const rows = await this.fetchByKeys('creatures', keys.slice(0, sampleSize));
+    await this.embedDocuments(rows);
+    return rows.map(row => this.transformMonster(row));
   }
+
+  /** How many candidate monsters an encounter is built from. */
+  private static readonly ENCOUNTER_SAMPLE_SIZE = 60;
 
   private allocateMonstersToEncounter(monsters: MonsterData[], budget: number, maxMonsters: number): EncounterMonster[] {
     const encounterMonsters: EncounterMonster[] = [];
@@ -1575,7 +1938,7 @@ export class Open5eClient {
   async getEncounterDifficulty(partySize: number, partyLevel: number, monsters: EncounterMonster[]): Promise<string> {
     const totalXP = monsters.reduce((sum, em) => sum + em.totalXP, 0);
     const monsterCount = monsters.reduce((sum, em) => sum + em.count, 0);
-    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] || 5;
+    const multiplier = this.XP_MULTIPLIERS[Math.min(monsterCount, 15)] ?? 1;
     const adjustedXP = Math.floor(totalXP * multiplier);
     
     const thresholds = this.ENCOUNTER_THRESHOLDS[Math.min(partyLevel, 20)];
@@ -1595,600 +1958,6 @@ export class Open5eClient {
     return 'deadly';
   }
 
-  // Player-focused Character Build Helper functionality
-  async generateCharacterBuild(options: CharacterBuildOptions = {}): Promise<CharacterBuildData> {
-    const {
-      preferredClass,
-      preferredRace,
-      preferredBackground,
-      playstyle = 'balanced',
-      campaignType = 'mixed',
-      experienceLevel = 'intermediate',
-      focusLevel = 5,
-      allowMulticlass = false,
-      preferredAbilityScores
-    } = options;
-
-    // Get available data
-    const [classes, races, backgrounds, feats] = await Promise.all([
-      this.searchClasses(),
-      this.searchRaces(''),
-      this.searchBackgrounds('', { limit: 100 }),
-      this.searchFeats('', { limit: 100 })
-    ]);
-
-    // Select race
-    const selectedRace = await this.selectOptimalRace(
-      races.results,
-      preferredRace,
-      playstyle,
-      preferredAbilityScores
-    );
-
-    // Select class
-    const selectedClass = await this.selectOptimalClass(
-      classes.results,
-      preferredClass,
-      playstyle,
-      campaignType,
-      selectedRace
-    );
-
-    // Select background
-    const selectedBackground = await this.selectOptimalBackground(
-      backgrounds.results,
-      preferredBackground,
-      selectedClass,
-      campaignType
-    );
-
-    // Get suggested feats
-    const suggestedFeats = await this.getSuggestedFeats(
-      feats.results,
-      selectedRace,
-      selectedClass,
-      playstyle,
-      focusLevel
-    );
-
-    // Get key spells if spellcaster
-    const keySpells = selectedClass.spellcastingAbility ? 
-      await this.getKeySpells(selectedClass, focusLevel) : undefined;
-
-    // Generate build strategy and progression
-    const buildStrategy = this.generateBuildStrategy(
-      selectedRace,
-      selectedClass,
-      selectedBackground,
-      playstyle,
-      experienceLevel
-    );
-
-    const levelProgression = this.generateLevelProgression(
-      selectedClass,
-      focusLevel,
-      playstyle
-    );
-
-    const build: CharacterBuildData = {
-      id: `build_${Date.now()}`,
-      name: this.generateBuildName(selectedRace, selectedClass, playstyle),
-      description: this.generateBuildDescription(selectedRace, selectedClass, selectedBackground, playstyle),
-      race: selectedRace,
-      class: selectedClass,
-      background: selectedBackground,
-      suggestedFeats: suggestedFeats,
-      abilityScorePriority: this.getAbilityScorePriority(selectedClass, playstyle),
-      keySpells,
-      recommendedEquipment: this.getRecommendedEquipment(selectedClass, playstyle),
-      buildStrategy,
-      levelProgression,
-      playstyle,
-      strengths: this.analyzeBuildStrengths(selectedRace, selectedClass, selectedBackground, playstyle),
-      weaknesses: this.analyzeBuildWeaknesses(selectedRace, selectedClass, selectedBackground, playstyle)
-    };
-
-    return build;
-  }
-
-  private async selectOptimalRace(
-    races: EnhancedRaceData[],
-    preferredRace?: string,
-    playstyle?: string,
-    preferredAbilityScores?: string[]
-  ): Promise<EnhancedRaceData> {
-    // If specific race requested, find it
-    if (preferredRace) {
-      const found = races.find(race => 
-        race.name.toLowerCase().includes(preferredRace.toLowerCase())
-      );
-      if (found) return found;
-    }
-
-    // Score races based on playstyle and ability score preferences
-    const scoredRaces = races.map(race => ({
-      race,
-      score: this.scoreRaceForPlaystyle(race, playstyle, preferredAbilityScores)
-    }));
-
-    scoredRaces.sort((a, b) => b.score - a.score);
-    return scoredRaces[0].race;
-  }
-
-  private async selectOptimalClass(
-    classes: EnhancedClassData[],
-    preferredClass?: string,
-    playstyle?: string,
-    campaignType?: string,
-    selectedRace?: EnhancedRaceData
-  ): Promise<EnhancedClassData> {
-    // If specific class requested, find it
-    if (preferredClass) {
-      const found = classes.find(cls => 
-        cls.name.toLowerCase().includes(preferredClass.toLowerCase())
-      );
-      if (found) return found;
-    }
-
-    // Score classes based on playstyle and campaign type
-    const scoredClasses = classes.map(cls => ({
-      class: cls,
-      score: this.scoreClassForPlaystyle(cls, playstyle, campaignType, selectedRace)
-    }));
-
-    scoredClasses.sort((a, b) => b.score - a.score);
-    return scoredClasses[0].class;
-  }
-
-  private async selectOptimalBackground(
-    backgrounds: BackgroundData[],
-    preferredBackground?: string,
-    selectedClass?: EnhancedClassData,
-    campaignType?: string
-  ): Promise<BackgroundData> {
-    // If specific background requested, find it
-    if (preferredBackground) {
-      const found = backgrounds.find(bg => 
-        bg.name.toLowerCase().includes(preferredBackground.toLowerCase())
-      );
-      if (found) return found;
-    }
-
-    // Score backgrounds based on class synergy and campaign type
-    const scoredBackgrounds = backgrounds.map(bg => ({
-      background: bg,
-      score: this.scoreBackgroundSynergy(bg, selectedClass, campaignType)
-    }));
-
-    scoredBackgrounds.sort((a, b) => b.score - a.score);
-    return scoredBackgrounds[0].background;
-  }
-
-  private async getSuggestedFeats(
-    feats: FeatData[],
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    playstyle?: string,
-    level?: number
-  ): Promise<FeatData[]> {
-    // Score feats based on race/class synergy and playstyle
-    const scoredFeats = feats.map(feat => ({
-      feat,
-      score: this.scoreFeatSynergy(feat, race, cls, playstyle)
-    }));
-
-    scoredFeats.sort((a, b) => b.score - a.score);
-    
-    // Return top 5 suggested feats
-    return scoredFeats.slice(0, 5).map(sf => sf.feat);
-  }
-
-  private async getKeySpells(cls: EnhancedClassData, level: number): Promise<EnhancedSpellData[]> {
-    try {
-      const classSpells = await this.getSpellsForClass(cls.name);
-      
-      // Filter spells by level and importance
-      const keySpells = classSpells
-        .filter(spell => spell.level <= Math.ceil(level / 2))
-        .sort((a, b) => {
-          // Prioritize by level and utility
-          if (a.level !== b.level) return a.level - b.level;
-          return this.getSpellUtilityScore(a) - this.getSpellUtilityScore(b);
-        })
-        .slice(0, 10);
-
-      return keySpells;
-    } catch (error) {
-      return [];
-    }
-  }
-
-  private scoreRaceForPlaystyle(race: EnhancedRaceData, playstyle?: string, preferredAbilities?: string[]): number {
-    let score = 0;
-    
-    // Base score for all races
-    score += 1;
-
-    // Analyze traits for playstyle fit
-    const traitText = race.traits.join(' ').toLowerCase();
-    
-    switch (playstyle) {
-      case 'damage':
-        if (traitText.includes('damage') || traitText.includes('attack')) score += 3;
-        if (traitText.includes('strength') || traitText.includes('dexterity')) score += 2;
-        break;
-      case 'support':
-        if (traitText.includes('spell') || traitText.includes('magic')) score += 3;
-        if (traitText.includes('wisdom') || traitText.includes('charisma')) score += 2;
-        break;
-      case 'tank':
-        if (traitText.includes('constitution') || traitText.includes('armor')) score += 3;
-        if (traitText.includes('resistance') || traitText.includes('hardy')) score += 2;
-        break;
-      case 'utility':
-        if (traitText.includes('skill') || traitText.includes('tool')) score += 3;
-        if (traitText.includes('intelligence') || traitText.includes('versatile')) score += 2;
-        break;
-    }
-
-    // Bonus for preferred abilities
-    if (preferredAbilities) {
-      preferredAbilities.forEach(ability => {
-        if (race.abilityScoreIncrease.toLowerCase().includes(ability.toLowerCase())) {
-          score += 2;
-        }
-      });
-    }
-
-    return score;
-  }
-
-  private scoreClassForPlaystyle(
-    cls: EnhancedClassData,
-    playstyle?: string,
-    campaignType?: string,
-    race?: EnhancedRaceData
-  ): number {
-    let score = 0;
-    
-    const className = cls.name.toLowerCase();
-    const classDesc = cls.description.toLowerCase();
-
-    // Base playstyle scoring
-    switch (playstyle) {
-      case 'damage':
-        if (['fighter', 'barbarian', 'ranger', 'rogue'].includes(className)) score += 5;
-        if (['paladin', 'warlock'].includes(className)) score += 3;
-        break;
-      case 'support':
-        if (['cleric', 'bard', 'druid'].includes(className)) score += 5;
-        if (['paladin', 'ranger'].includes(className)) score += 3;
-        break;
-      case 'tank':
-        if (['fighter', 'paladin', 'barbarian'].includes(className)) score += 5;
-        if (['cleric', 'druid'].includes(className)) score += 2;
-        break;
-      case 'utility':
-        if (['wizard', 'bard', 'rogue'].includes(className)) score += 5;
-        if (['ranger', 'druid'].includes(className)) score += 3;
-        break;
-      case 'balanced':
-        if (['paladin', 'ranger', 'bard'].includes(className)) score += 4;
-        score += 2; // All classes get some points for balanced
-        break;
-    }
-
-    // Campaign type scoring
-    switch (campaignType) {
-      case 'combat':
-        if (['fighter', 'barbarian', 'paladin'].includes(className)) score += 2;
-        break;
-      case 'roleplay':
-        if (['bard', 'warlock', 'sorcerer'].includes(className)) score += 2;
-        break;
-      case 'exploration':
-        if (['ranger', 'druid', 'rogue'].includes(className)) score += 2;
-        break;
-    }
-
-    return score;
-  }
-
-  private scoreBackgroundSynergy(
-    background: BackgroundData,
-    cls?: EnhancedClassData,
-    campaignType?: string
-  ): number {
-    let score = 1; // Base score
-
-    if (!cls) return score;
-
-    const bgName = background.name.toLowerCase();
-    const className = cls.name.toLowerCase();
-    const skillProfs = background.skillProficiencies.toLowerCase();
-
-    // Class-specific synergies
-    if (className.includes('cleric') && bgName.includes('acolyte')) score += 3;
-    if (className.includes('rogue') && (bgName.includes('criminal') || bgName.includes('charlatan'))) score += 3;
-    if (className.includes('fighter') && bgName.includes('soldier')) score += 3;
-    if (className.includes('wizard') && bgName.includes('sage')) score += 3;
-    if (className.includes('bard') && bgName.includes('entertainer')) score += 3;
-
-    // Campaign type synergies
-    switch (campaignType) {
-      case 'roleplay':
-        if (bgName.includes('noble') || bgName.includes('entertainer')) score += 2;
-        break;
-      case 'exploration':
-        if (bgName.includes('outlander') || bgName.includes('folk hero')) score += 2;
-        break;
-      case 'combat':
-        if (bgName.includes('soldier') || bgName.includes('gladiator')) score += 2;
-        break;
-    }
-
-    return score;
-  }
-
-  private scoreFeatSynergy(
-    feat: FeatData,
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    playstyle?: string
-  ): number {
-    let score = 1;
-    
-    const featName = feat.name.toLowerCase();
-    const featDesc = feat.description.toLowerCase();
-    const className = cls.name.toLowerCase();
-
-    // Playstyle-based scoring
-    switch (playstyle) {
-      case 'damage':
-        if (featName.includes('weapon') || featName.includes('sharpshooter') || featName.includes('great weapon')) score += 4;
-        if (featDesc.includes('damage') || featDesc.includes('attack')) score += 2;
-        break;
-      case 'support':
-        if (featName.includes('healer') || featName.includes('inspiring')) score += 4;
-        if (featDesc.includes('ally') || featDesc.includes('help')) score += 2;
-        break;
-      case 'tank':
-        if (featName.includes('tough') || featName.includes('shield') || featName.includes('armor')) score += 4;
-        if (featDesc.includes('ac') || featDesc.includes('hit points')) score += 2;
-        break;
-      case 'utility':
-        if (featName.includes('skill') || featName.includes('expertise')) score += 4;
-        if (featDesc.includes('proficiency') || featDesc.includes('advantage')) score += 2;
-        break;
-    }
-
-    // Class-specific feat synergies
-    if (className.includes('fighter') && featName.includes('weapon')) score += 2;
-    if (className.includes('wizard') && featName.includes('spell')) score += 2;
-    if (className.includes('rogue') && featName.includes('skill')) score += 2;
-
-    return score;
-  }
-
-  private getSpellUtilityScore(spell: EnhancedSpellData): number {
-    let score = 0;
-    
-    const desc = spell.description.toLowerCase();
-    
-    // High utility spells get higher scores
-    if (desc.includes('heal') || desc.includes('cure')) score += 5;
-    if (desc.includes('damage') && spell.level <= 3) score += 4;
-    if (desc.includes('buff') || desc.includes('enhance')) score += 3;
-    if (desc.includes('utility') || desc.includes('ritual')) score += 2;
-    
-    // Lower level spells are more accessible
-    score += (10 - spell.level);
-    
-    return score;
-  }
-
-  private generateBuildName(race: EnhancedRaceData, cls: EnhancedClassData, playstyle: string): string {
-    const styleNames = {
-      damage: 'Destroyer',
-      support: 'Guardian',
-      tank: 'Bulwark',
-      utility: 'Versatile',
-      balanced: 'Adaptable'
-    };
-    
-    return `${styleNames[playstyle as keyof typeof styleNames] || 'Balanced'} ${race.name} ${cls.name}`;
-  }
-
-  private generateBuildDescription(
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    background: BackgroundData,
-    playstyle: string
-  ): string {
-    const descriptions = {
-      damage: 'focused on dealing maximum damage to enemies',
-      support: 'dedicated to helping allies and controlling the battlefield',
-      tank: 'built to absorb damage and protect the party',
-      utility: 'designed for problem-solving and skill versatility',
-      balanced: 'well-rounded for any situation'
-    };
-
-    return `A ${race.name} ${cls.name} with a ${background.name} background, ${descriptions[playstyle as keyof typeof descriptions] || 'adaptable to various challenges'}. This build combines the ${race.name}'s natural abilities with the ${cls.name}'s class features for optimal ${playstyle} performance.`;
-  }
-
-  private getAbilityScorePriority(cls: EnhancedClassData, playstyle: string): string[] {
-    const className = cls.name.toLowerCase();
-    
-    // Class-based priorities
-    const classPriorities: Record<string, string[]> = {
-      fighter: ['strength', 'constitution', 'dexterity'],
-      wizard: ['intelligence', 'constitution', 'dexterity'],
-      cleric: ['wisdom', 'constitution', 'strength'],
-      rogue: ['dexterity', 'intelligence', 'constitution'],
-      barbarian: ['strength', 'constitution', 'dexterity'],
-      bard: ['charisma', 'dexterity', 'constitution'],
-      druid: ['wisdom', 'constitution', 'dexterity'],
-      monk: ['dexterity', 'wisdom', 'constitution'],
-      paladin: ['strength', 'charisma', 'constitution'],
-      ranger: ['dexterity', 'wisdom', 'constitution'],
-      sorcerer: ['charisma', 'constitution', 'dexterity'],
-      warlock: ['charisma', 'constitution', 'dexterity']
-    };
-
-    return classPriorities[className] || ['strength', 'dexterity', 'constitution'];
-  }
-
-  private getRecommendedEquipment(cls: EnhancedClassData, playstyle: string): string[] {
-    const className = cls.name.toLowerCase();
-    const baseEquipment: string[] = [];
-
-    // Class-based equipment
-    if (['fighter', 'paladin', 'barbarian'].includes(className)) {
-      baseEquipment.push('Melee weapons', 'Heavy armor', 'Shield');
-    } else if (['wizard', 'sorcerer', 'warlock'].includes(className)) {
-      baseEquipment.push('Spellcasting focus', 'Spell components', 'Light armor');
-    } else if (['rogue', 'ranger'].includes(className)) {
-      baseEquipment.push('Ranged weapons', 'Thieves\' tools', 'Light armor');
-    }
-
-    // Playstyle additions
-    switch (playstyle) {
-      case 'damage':
-        baseEquipment.push('Weapon enhancements', 'Damage-focused magic items');
-        break;
-      case 'support':
-        baseEquipment.push('Healing potions', 'Utility magic items');
-        break;
-      case 'tank':
-        baseEquipment.push('Defensive magic items', 'Health potions');
-        break;
-    }
-
-    return baseEquipment;
-  }
-
-  private generateBuildStrategy(
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    background: BackgroundData,
-    playstyle: string,
-    experienceLevel: string
-  ): string {
-    const strategies = {
-      beginner: 'Focus on learning your core class abilities first. Use simple, effective tactics.',
-      intermediate: 'Combine racial traits with class features for synergistic effects.',
-      advanced: 'Optimize ability score placement and feat selection for maximum efficiency.'
-    };
-
-    return `${strategies[experienceLevel as keyof typeof strategies]} This ${race.name} ${cls.name} excels at ${playstyle} tactics. Use your ${background.name} background skills to complement your combat role.`;
-  }
-
-  private generateLevelProgression(
-    cls: EnhancedClassData,
-    focusLevel: number,
-    playstyle: string
-  ): { level: number; features: string[]; recommendations: string[] }[] {
-    const progression = [];
-    
-    for (let level = 1; level <= Math.min(focusLevel, 10); level++) {
-      const features = [`Level ${level} ${cls.name} features`];
-      const recommendations = [];
-
-      if (level === 1) {
-        features.push('Starting equipment', 'Base class abilities');
-        recommendations.push('Focus on learning core mechanics');
-      } else if (level === 4 || level === 8) {
-        features.push('Ability Score Improvement or Feat');
-        recommendations.push('Consider feat vs ability score based on build goals');
-      } else if (level % 2 === 0) {
-        features.push('Class feature progression');
-        recommendations.push(`Enhance ${playstyle} capabilities`);
-      }
-
-      progression.push({ level, features, recommendations });
-    }
-
-    return progression;
-  }
-
-  private analyzeBuildStrengths(
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    background: BackgroundData,
-    playstyle: string
-  ): string[] {
-    const strengths = [];
-    
-    // Add class-based strengths
-    const className = cls.name.toLowerCase();
-    if (['fighter', 'barbarian', 'paladin'].includes(className)) {
-      strengths.push('High survivability', 'Strong melee combat');
-    }
-    if (['wizard', 'sorcerer', 'warlock'].includes(className)) {
-      strengths.push('Powerful spellcasting', 'Versatile problem solving');
-    }
-    if (['rogue', 'ranger'].includes(className)) {
-      strengths.push('High skill versatility', 'Excellent damage potential');
-    }
-
-    // Add playstyle strengths
-    switch (playstyle) {
-      case 'damage':
-        strengths.push('Exceptional damage output', 'Combat effectiveness');
-        break;
-      case 'support':
-        strengths.push('Team enhancement', 'Battlefield control');
-        break;
-      case 'tank':
-        strengths.push('Damage absorption', 'Party protection');
-        break;
-      case 'utility':
-        strengths.push('Problem solving', 'Skill coverage');
-        break;
-    }
-
-    return strengths;
-  }
-
-  private analyzeBuildWeaknesses(
-    race: EnhancedRaceData,
-    cls: EnhancedClassData,
-    background: BackgroundData,
-    playstyle: string
-  ): string[] {
-    const weaknesses = [];
-    
-    // Add class-based weaknesses
-    const className = cls.name.toLowerCase();
-    if (['barbarian'].includes(className)) {
-      weaknesses.push('Limited ranged options', 'Vulnerable to mental effects');
-    }
-    if (['wizard'].includes(className)) {
-      weaknesses.push('Low hit points', 'Limited armor options');
-    }
-    if (['fighter'].includes(className)) {
-      weaknesses.push('Limited magical abilities', 'Relies on equipment');
-    }
-
-    // Add playstyle weaknesses
-    switch (playstyle) {
-      case 'damage':
-        weaknesses.push('May lack defensive options', 'Focused specialization');
-        break;
-      case 'support':
-        weaknesses.push('Lower personal damage', 'Resource dependent');
-        break;
-      case 'tank':
-        weaknesses.push('Limited damage output', 'Slower movement');
-        break;
-      case 'utility':
-        weaknesses.push('Jack of all trades weakness', 'May lack specialization');
-        break;
-    }
-
-    return weaknesses;
-  }
-
   // Cache management
   getCacheStats(): { keys: number; hits: number; misses: number } {
     return this.cache.getStats();
@@ -2196,6 +1965,6 @@ export class Open5eClient {
 
   clearCache(): void {
     this.cache.flushAll();
-    console.log('🗑️ Open5e cache cleared');
+    console.error('🗑️ Open5e cache cleared');
   }
 }

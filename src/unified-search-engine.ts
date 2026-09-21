@@ -1,12 +1,12 @@
 import Fuse from 'fuse.js';
-import { Open5eClient } from './open5e-client.js';
+import { Open5eClient, type ContentScope } from './open5e-client.js';
 import NodeCache from 'node-cache';
 
 // Content type enumeration
 export type ContentType = 
   | 'spells' | 'monsters' | 'races' | 'classes'
   | 'weapons' | 'armor' | 'magic-items' | 'feats' 
-  | 'conditions' | 'backgrounds' | 'sections' | 'spell-lists';
+  | 'conditions' | 'backgrounds' | 'sections';
 
 // Unified search options interface
 export interface UnifiedSearchOptions {
@@ -16,6 +16,7 @@ export interface UnifiedSearchOptions {
   includeDetails?: boolean;              // Include full details vs previews (default: false)
   fuzzyThreshold?: number;               // Fuzzy matching sensitivity 0.0-1.0 (default: 0.3)
   sortBy?: 'relevance' | 'name' | 'type'; // Result sorting strategy (default: relevance)
+  scope?: ContentScope;                  // Restrict every content type to some sources
 }
 
 // Search result item interface
@@ -55,6 +56,8 @@ export interface UnifiedSearchResult {
   relatedContent?: RelatedContentItem[]; // Cross-content connections
 }
 
+type NormalizedOptions = Required<Omit<UnifiedSearchOptions, 'scope'>> & { scope?: ContentScope };
+
 // Individual search result from API
 interface ApiSearchResult {
   contentType: ContentType;
@@ -88,12 +91,16 @@ export class UnifiedSearchEngine {
     
     // Validate and normalize options
     const normalizedOptions = this.normalizeOptions(options);
+
+    // A bad scope must fail the search, not degrade every content type to
+    // "no results" the way a single failing content type does.
+    await this.open5eClient.scopeDocuments(normalizedOptions.scope);
     
     // Check cache first
     const cacheKey = this.generateCacheKey(normalizedOptions);
     const cached = this.cache.get<UnifiedSearchResult>(cacheKey);
     if (cached) {
-      console.log(`🔄 Unified search cache hit: ${cacheKey}`);
+      console.error(`🔄 Unified search cache hit: ${cacheKey}`);
       return cached;
     }
     
@@ -121,7 +128,7 @@ export class UnifiedSearchEngine {
       
       // Cache the result
       this.cache.set(cacheKey, result);
-      console.log(`💾 Unified search cached: ${cacheKey} (${result.totalResults} results in ${result.executionTime}ms)`);
+      console.error(`💾 Unified search cached: ${cacheKey} (${result.totalResults} results in ${result.executionTime}ms)`);
       
       return result;
       
@@ -133,7 +140,7 @@ export class UnifiedSearchEngine {
   /**
    * Normalize and validate search options
    */
-  private normalizeOptions(options: UnifiedSearchOptions): Required<UnifiedSearchOptions> {
+  private normalizeOptions(options: UnifiedSearchOptions): NormalizedOptions {
     if (!options.query || typeof options.query !== 'string' || options.query.trim().length === 0) {
       throw new Error('Search query is required and must be a non-empty string');
     }
@@ -144,14 +151,15 @@ export class UnifiedSearchEngine {
       limit: Math.min(Math.max(options.limit || 5, 1), 20), // Clamp between 1-20
       includeDetails: options.includeDetails || false,
       fuzzyThreshold: Math.min(Math.max(options.fuzzyThreshold || 0.3, 0.0), 1.0), // Clamp 0.0-1.0
-      sortBy: options.sortBy || 'relevance'
+      sortBy: options.sortBy || 'relevance',
+      scope: options.scope
     };
   }
 
   /**
    * Generate cache key for unified search options
    */
-  private generateCacheKey(options: Required<UnifiedSearchOptions>): string {
+  private generateCacheKey(options: NormalizedOptions): string {
     const keyParts = [
       'unified',
       options.query.toLowerCase(),
@@ -159,7 +167,9 @@ export class UnifiedSearchEngine {
       options.limit.toString(),
       options.includeDetails.toString(),
       options.fuzzyThreshold.toString(),
-      options.sortBy
+      options.sortBy,
+      options.scope?.ruleset ?? '',
+      options.scope?.sources?.join(',') ?? ''
     ];
     
     return keyParts.join('|');
@@ -168,7 +178,7 @@ export class UnifiedSearchEngine {
   /**
    * Build array of search promises for parallel execution
    */
-  private buildSearchPromises(options: Required<UnifiedSearchOptions>): Promise<ApiSearchResult>[] {
+  private buildSearchPromises(options: NormalizedOptions): Promise<ApiSearchResult>[] {
     const promises: Promise<ApiSearchResult>[] = [];
     
     for (const contentType of options.contentTypes) {
@@ -183,47 +193,44 @@ export class UnifiedSearchEngine {
    */
   private async executeContentTypeSearch(
     contentType: ContentType, 
-    options: Required<UnifiedSearchOptions>
+    options: NormalizedOptions
   ): Promise<ApiSearchResult> {
     try {
       let data;
       
       switch (contentType) {
         case 'spells':
-          data = await this.open5eClient.searchSpells(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchSpells(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'monsters':
-          data = await this.open5eClient.searchMonsters(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchMonsters(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'races':
-          data = await this.open5eClient.searchRaces(options.query);
+          data = await this.open5eClient.searchRaces(options.query, { scope: options.scope });
           break;
         case 'classes':
-          data = await this.open5eClient.searchClasses();
+          data = await this.open5eClient.searchClasses({ scope: options.scope });
           break;
         case 'weapons':
-          data = await this.open5eClient.searchWeapons(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchWeapons(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'armor':
-          data = await this.open5eClient.searchArmor(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchArmor(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'magic-items':
-          data = await this.open5eClient.searchMagicItems(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchMagicItems(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'feats':
-          data = await this.open5eClient.searchFeats(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchFeats(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'conditions':
-          data = await this.open5eClient.searchConditions(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchConditions(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'backgrounds':
-          data = await this.open5eClient.searchBackgrounds(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchBackgrounds(options.query, { limit: options.limit, scope: options.scope });
           break;
         case 'sections':
-          data = await this.open5eClient.searchSections(options.query, { limit: options.limit });
-          break;
-        case 'spell-lists':
-          data = await this.open5eClient.searchSpellLists(options.query, { limit: options.limit });
+          data = await this.open5eClient.searchSections(options.query, { limit: options.limit, scope: options.scope });
           break;
         default:
           throw new Error(`Unsupported content type: ${contentType}`);
@@ -246,7 +253,7 @@ export class UnifiedSearchEngine {
    */
   private processSearchResults(
     searchResults: PromiseSettledResult<ApiSearchResult>[],
-    options: Required<UnifiedSearchOptions>
+    options: NormalizedOptions
   ): Record<ContentType, ContentTypeResults> {
     const processedResults: Record<ContentType, ContentTypeResults> = {} as any;
     
@@ -307,7 +314,7 @@ export class UnifiedSearchEngine {
   private normalizeApiResults(
     apiResults: any[], 
     contentType: ContentType, 
-    options: Required<UnifiedSearchOptions>
+    options: NormalizedOptions
   ): SearchResultItem[] {
     return apiResults.map((item, index) => {
       const normalizedItem: SearchResultItem = {
@@ -352,8 +359,6 @@ export class UnifiedSearchEngine {
         return item.description || item.desc || '';
       case 'sections':
         return item.description || item.desc || '';
-      case 'spell-lists':
-        return item.description || item.desc || `Spell list for ${item.name}`;
       default:
         return item.description || item.desc || '';
     }
@@ -538,8 +543,7 @@ export class UnifiedSearchEngine {
       'feats': 0.7,
       'conditions': 0.6,
       'backgrounds': 0.6,
-      'sections': 0.5,
-      'spell-lists': 0.5
+      'sections': 0.5
     };
     
     score *= typeWeights[item.contentType] || 1.0;
@@ -662,7 +666,7 @@ export class UnifiedSearchEngine {
     return [
       'spells', 'monsters', 'races', 'classes',
       'weapons', 'armor', 'magic-items', 'feats',
-      'conditions', 'backgrounds', 'sections', 'spell-lists'
+      'conditions', 'backgrounds', 'sections'
     ];
   }
 
@@ -671,7 +675,7 @@ export class UnifiedSearchEngine {
    */
   private initializeFuzzySearch(): void {
     // Configuration will be expanded in Phase 2
-    console.log('🔍 Fuzzy search configurations initialized');
+    console.error('🔍 Fuzzy search configurations initialized');
   }
 
   /**
@@ -686,6 +690,9 @@ export class UnifiedSearchEngine {
    */
   public clearCache(): void {
     this.cache.flushAll();
-    console.log('🗑️ Unified search cache cleared');
+    // The engine's own cache sits on top of the client's HTTP cache, so both
+    // have to go or a "cleared" cache still serves stale upstream responses.
+    this.open5eClient.clearCache();
+    console.error('🗑️ Unified search cache cleared');
   }
 }
