@@ -44,13 +44,39 @@ describe('name queries are routed per endpoint', () => {
     });
   }
 
-  test('searchSections keeps full-text search, since sections are rules prose', async () => {
-    mockWith(page([{ name: 'Actions in Combat', desc: 'text', slug: 'actions' }]));
-    await client.searchSections('grapple');
+  test('searchSections matches rules prose locally, since /v2/rules/ ignores search=', async () => {
+    mockWith(page([
+      { key: 'srd_grappling', name: 'Grappling', desc: 'When you want to grab a creature...', document: { key: 'srd-2014' } },
+      { key: 'srd_shoving', name: 'Shoving a Creature', desc: 'Using the Attack action, you can shove.', document: { key: 'srd-2014' } },
+      { key: 'srd_escape', name: 'Escaping a Grapple', desc: 'A grappled creature can escape.', document: { key: 'srd-2014' } }
+    ]));
+    const result = await client.searchSections('grapple');
 
-    assert.equal(mock.pathOf(), '/v1/sections/');
-    assert.equal(mock.paramsOf().search, 'grapple');
+    assert.equal(mock.pathOf(), '/v2/rules/');
+    assert.equal(mock.paramsOf().search, undefined);
     assert.equal(mock.paramsOf().name__icontains, undefined);
+    assert.deepEqual(result.results.map(s => s.key), ['srd_escape'],
+      'name and text are both searched; "grapple" is not in "Grappling"');
+  });
+
+  test('a rules section is found by key as well as by name', async () => {
+    mockWith(page([
+      { key: 'srd_grappling', name: 'Grappling', desc: 'x', ruleset: 'srd_combat', document: { key: 'srd-2014' } },
+      { key: 'srd-2024_grappling', name: 'Grappling', desc: 'y', document: { key: 'srd-2024' } }
+    ]));
+
+    assert.equal((await client.getSectionDetails('srd-2024_grappling')).description, 'y');
+    const byName = await client.getSectionDetails('grappling');
+    assert.equal(byName.key, 'srd_grappling', 'the 2014 SRD copy wins by default');
+    assert.equal(byName.parent, 'srd_combat');
+  });
+
+  test('getAllSections lists sections without their text', async () => {
+    mockWith(page([{ key: 'srd_grappling', name: 'Grappling', desc: 'long text', document: { key: 'srd-2014' } }]));
+    const [summary] = await client.getAllSections();
+
+    assert.equal(summary.name, 'Grappling');
+    assert.equal(summary.description, undefined);
   });
 
   test('races use /v2/species/, not the removed /v2/races/', async () => {

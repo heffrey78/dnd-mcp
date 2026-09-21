@@ -109,6 +109,14 @@ describe('MCP tools against the live API', () => {
     assert.match(response.result.content[0].text, /Unknown category "wonderous item"\. Valid values: .*wondrous-item/);
   });
 
+  test('search_sections finds rules by their text, scoped to a ruleset', async () => {
+    const body = toolJson(await server.callTool('search_sections', { query: 'grappled', ruleset: '5e-2014' }));
+
+    assert.ok(body.sections.length > 0);
+    assert.ok(body.sections.every(s => s.source.ruleset === '5e-2014'));
+    assert.ok(body.sections.every(s => `${s.name} ${s.description}`.toLowerCase().includes('grappled')));
+  });
+
   test('search_armor filters locally and does not return the full catalogue', async () => {
     const body = toolJson(await server.callTool('search_armor', { query: 'plate' }));
 

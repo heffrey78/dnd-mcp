@@ -268,13 +268,16 @@ export interface BackgroundData {
 }
 
 export interface SectionData {
-  slug: string;
+  key: string;
   name: string;
   description: string;
+  /** Key of the ruleset (chapter) the section belongs to. */
   parent?: string;
-  document: string;
+  source: SourceLabel;
   url: string;
 }
+
+export type SectionSummary = Pick<SectionData, 'key' | 'name' | 'parent' | 'source'>;
 
 export interface EncounterData {
   id: string;
@@ -1520,59 +1523,51 @@ export class Open5eClient {
     return this.pickResult(results, backgroundName);
   }
 
-  // Rules Sections functionality
+  // Rules sections
+  /**
+   * Rules text from /v2/rules/. A query matches names and rules prose, since
+   * a rule is usually looked up by what it covers; /v2/rules/ ignores both
+   * `search` and `desc__icontains`, so the text is matched locally.
+   */
   async searchSections(query?: string, options: {
     limit?: number;
+    scope?: ContentScope;
   } = {}): Promise<{ count: number; results: SectionData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.search = query;  // full-text: sections are rules prose, not just titles
-    if (options.limit) params.limit = options.limit;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/sections/', params);
-
-    const transformedResults: SectionData[] = response.results.map(section => ({
-      slug: section.slug,
-      name: section.name,
-      description: section.desc || 'No description available',
-      parent: section.parent,
-      document: section.document,
-      url: `https://api.open5e.com/v1/sections/${section.slug}/`
-    }));
+    const response = await this.query('rules', {
+      text: query,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, all: true });
 
     return {
       count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      results: response.rows.map(rule => this.transformSection(rule)),
+      hasMore: response.hasMore
     };
   }
 
-  async getSectionDetails(sectionName: string): Promise<SectionData | null> {
-    // First try to get all sections and find exact match
-    const allResults = await this.searchSections('', { limit: 100 });
-    
-    // Find exact match first (by name or slug)
-    const exactMatch = allResults.results.find(
-      section => section.name.toLowerCase() === sectionName.toLowerCase() ||
-                 section.slug.toLowerCase() === sectionName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match by name
-    const partialMatch = allResults.results.find(
-      section => section.name.toLowerCase().includes(sectionName.toLowerCase())
-    );
-    
-    return partialMatch || null;
+  private transformSection(rule: any): SectionData {
+    return {
+      key: rule.key ?? '',
+      name: rule.name,
+      description: rule.desc || 'No description available',
+      parent: rule.ruleset || undefined,
+      source: sourceOf(rule),
+      url: rule.key ? `https://api.open5e.com/v2/rules/${rule.key}/` : ''
+    };
   }
 
-  async getAllSections(): Promise<SectionData[]> {
-    // Get all sections for quick reference
-    const response = await this.searchSections('', { limit: 100 });
-    return response.results;
+  /** A rules section by key, or by name ranked like any other lookup. */
+  async getSectionDetails(sectionName: string, scope?: ContentScope): Promise<SectionData | null> {
+    const needle = sectionName.trim().toLowerCase();
+    const { results } = await this.searchSections('', { scope });
+    return results.find(section => section.key.toLowerCase() === needle)
+      ?? this.pickResult(results, needle);
+  }
+
+  /** Every rules section's name, key and parent -- the text itself is left out. */
+  async getAllSections(scope?: ContentScope): Promise<SectionSummary[]> {
+    const { results } = await this.searchSections('', { scope });
+    return results.map(({ key, name, parent, source }) => ({ key, name, parent, source }));
   }
 
   // DM Encounter Builder functionality

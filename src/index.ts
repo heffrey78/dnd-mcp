@@ -110,7 +110,8 @@ const SCOPED_TOOLS = new Set([
   'search_magic_items', 'get_magic_item_details',
   'search_feats', 'get_feat_details',
   'search_conditions', 'get_condition_details', 'get_all_conditions',
-  'search_backgrounds', 'get_background_details'
+  'search_backgrounds', 'get_background_details',
+  'search_sections', 'get_section_details', 'get_all_sections'
 ]);
 
 function parseScope(toolName: string, args: Record<string, any> | undefined): ContentScope | undefined {
@@ -694,7 +695,7 @@ const tools: Tool[] = [
       properties: {
         section_name: {
           type: 'string',
-          description: 'The name or slug of the rules section to get details for',
+          description: 'The name or key of the rules section to get details for',
         },
       },
       required: ['section_name'],
@@ -702,7 +703,7 @@ const tools: Tool[] = [
   },
   {
     name: 'get_all_sections',
-    description: 'Get all available D&D 5E rules sections for quick reference',
+    description: 'List every D&D 5E rules section by name, key and chapter (without the rules text; use get_section_details for that)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1594,12 +1595,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // NEW: Rules Sections tools
       case 'search_sections': {
-        const { query, limit } = args || {};
-        const options: any = {};
-        
-        if (limit) options.limit = limit;
-
-        const results = await open5eClient.searchSections(query as string, options);
+        const results = await open5eClient.searchSections(optionalString(args?.query, 'query'), {
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 50),
+          scope
+        });
 
         return {
           content: [
@@ -1619,7 +1618,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_section_details': {
         const sectionName = validateStringInput(args?.section_name, 'section_name');
 
-        const section = await open5eClient.getSectionDetails(sectionName);
+        const section = await open5eClient.getSectionDetails(sectionName, scope);
         if (!section) {
           return {
             content: [
@@ -1642,7 +1641,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_all_sections': {
-        const sections = await open5eClient.getAllSections();
+        const sections = await open5eClient.getAllSections(scope);
 
         return {
           content: [
