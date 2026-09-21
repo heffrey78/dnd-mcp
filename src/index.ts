@@ -861,7 +861,7 @@ const tools: Tool[] = [
   // Player-focused character build helper tools
   {
     name: 'generate_character_build',
-    description: 'Generate a character build: species, class and subclass, background, ability scores, hit points, spells, feats and a level-by-level plan. Uses the 2014 SRD unless ruleset or sources say otherwise',
+    description: 'Generate a character build: species, class and subclass, background, ability scores, hit points, spells, feats and a level-by-level plan. Uses the 2024 SRD unless ruleset or sources say otherwise',
     inputSchema: {
       type: 'object',
       properties: {

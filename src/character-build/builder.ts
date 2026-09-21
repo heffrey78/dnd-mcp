@@ -28,8 +28,12 @@ import {
   type AbilityScores, type CharacterBuildData, type CharacterBuildOptions, type Playstyle, type SpellSuggestion
 } from './types.js';
 
-/** Builds use the 2014 SRD unless told otherwise: it is the one set of sources known to fit together. */
-export const DEFAULT_BUILD_SCOPE: ContentScope = { sources: ['srd-2014'] };
+/**
+ * Builds use the 2024 SRD unless told otherwise: the current rules, and a set
+ * of sources known to fit together (four backgrounds with origin feats, where
+ * the 2014 SRD has only Acolyte).
+ */
+export const DEFAULT_BUILD_SCOPE: ContentScope = { sources: ['srd-2024'] };
 
 type Ruleset = '5e-2014' | '5e-2024';
 
@@ -64,7 +68,7 @@ export class CharacterBuilder {
     const warnings: string[] = [];
     const notes: string[] = [];
     if (!options.scope) {
-      notes.push('Built from the 2014 SRD only. Pass ruleset or sources to draw on other books.');
+      notes.push('Built from the 2024 SRD only. Pass ruleset or sources to draw on other books.');
     }
 
     // Class and species are chosen together: a class's fit for the

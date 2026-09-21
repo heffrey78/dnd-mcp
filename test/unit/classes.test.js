@@ -67,18 +67,25 @@ function responder(url) {
 }
 
 describe('class details', () => {
-  test('a name resolves to the 2014 SRD class by default', async () => {
+  test('a name resolves to the 2024 SRD class by default', async () => {
     mock = installMockFetch(responder);
     const bard = await new Open5eClient().getClassDetails('bard');
 
+    assert.equal(bard.key, 'srd-2024_bard');
+    assert.equal(bard.source.ruleset, '5e-2024');
+  });
+
+  test('a 2014 scope resolves the 2014 SRD class', async () => {
+    mock = installMockFetch(responder);
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
+
     assert.equal(bard.key, 'srd_bard');
     assert.equal(bard.hitDie, 'd8');
-    assert.equal(bard.source.ruleset, '5e-2014');
   });
 
   test('2014 proficiencies are parsed from the bold-label lines', async () => {
     mock = installMockFetch(responder);
-    const bard = await new Open5eClient().getClassDetails('bard');
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
 
     assert.deepEqual(bard.proficiencies, {
       armor: 'Light armor', weapons: 'Simple weapons, rapiers', tools: undefined, skills: 'Choose any three'
@@ -98,7 +105,7 @@ describe('class details', () => {
 
   test('key abilities and caster type come from the rules table when Open5e leaves them empty', async () => {
     mock = installMockFetch(responder);
-    const bard = await new Open5eClient().getClassDetails('bard');
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
 
     assert.deepEqual(bard.primaryAbility, ['charisma']);
     assert.equal(bard.spellcastingAbility, 'charisma');
@@ -108,7 +115,7 @@ describe('class details', () => {
 
   test('features are ordered by the level they are gained, with per-level details', async () => {
     mock = installMockFetch(responder);
-    const bard = await new Open5eClient().getClassDetails('bard');
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
 
     assert.deepEqual(bard.features.map(f => f.name), ['Bardic Inspiration', 'Jack of All Trades']);
     assert.deepEqual(bard.features[0].levels, [1, 5, 10]);
@@ -117,7 +124,7 @@ describe('class details', () => {
 
   test('table columns include mis-tagged ones but not the spell-slot columns', async () => {
     mock = installMockFetch(responder);
-    const bard = await new Open5eClient().getClassDetails('bard');
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
 
     assert.deepEqual(Object.keys(bard.tableColumns), ['Spells Known']);
     assert.deepEqual(bard.tableColumns['Spells Known'], { 1: '4', 2: '5' });
@@ -125,7 +132,7 @@ describe('class details', () => {
 
   test('subclasses come with their features', async () => {
     mock = installMockFetch(responder);
-    const bard = await new Open5eClient().getClassDetails('bard');
+    const bard = await new Open5eClient().getClassDetails('bard', { ruleset: '5e-2014' });
 
     assert.deepEqual(bard.subclasses, ['College of Lore']);
     assert.deepEqual(bard.detailedArchetypes[0].features.map(f => f.name), ['Cutting Words', 'Peerless Skill']);

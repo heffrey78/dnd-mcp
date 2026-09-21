@@ -97,10 +97,10 @@ export function resolveScope(
 
 /**
  * Preference among same-named entries when the caller did not scope the
- * lookup: the 2014 SRD (and "core", which holds its conditions) first, then
- * the 2024 SRD, then everything else.
+ * lookup: the 2024 SRD first, then the 2014 SRD (and "core", which holds its
+ * conditions), then everything else.
  */
-export const DEFAULT_SOURCE_PRIORITY: readonly string[] = ['srd-2014', 'core', 'srd-2024'];
+export const DEFAULT_SOURCE_PRIORITY: readonly string[] = ['srd-2024', 'srd-2014', 'core'];
 
 export function sourceRank(key: string, priority: readonly string[] = DEFAULT_SOURCE_PRIORITY): number {
   const rank = priority.indexOf(key);

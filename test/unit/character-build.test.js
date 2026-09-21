@@ -12,6 +12,10 @@ let mock;
 afterEach(() => { mock?.restore(); mock = undefined; });
 
 const srd = { key: 'srd-2014', display_name: '5e 2014 Rules', gamesystem: { key: '5e-2014' } };
+const srd24 = { key: 'srd-2024', display_name: '5e 2024 Rules', gamesystem: { key: '5e-2024' } };
+// Most tests pin down 2014 mechanics (subspecies, species increases), so they
+// ask for the 2014 SRD; builds default to the 2024 SRD.
+const SRD_2014 = { sources: ['srd-2014'] };
 const a5e = { key: 'a5e-ag', display_name: "Adventurer's Guide", gamesystem: { key: 'a5e' } };
 const toh = { key: 'toh', display_name: 'Tome of Heroes', gamesystem: { key: '5e-2014' } };
 
@@ -53,7 +57,18 @@ const lore = {
   key: 'srd_college-of-lore', name: 'College of Lore', document: srd, subclass_of: { key: 'srd_bard' },
   features: [feature('Cutting Words', [3]), feature('Peerless Skill', [14])]
 };
-const classes = [bard, fighter, paladin, lore];
+const fighter2024 = {
+  key: 'srd-2024_fighter', name: 'Fighter', document: srd24, hit_dice: 'D10', subclass_of: null,
+  primary_abilities: [], saving_throws: [{ name: 'Strength' }, { name: 'Constitution' }],
+  features: [
+    { key: 'core', name: 'Core Fighter Traits', feature_type: 'CORE_TRAITS_TABLE', gained_at: [], data_for_class_table: [],
+      desc: '|||\n|---|---|\n|Primary Ability|Strength or Dexterity|\n|Armor Training|Light, Medium, and Heavy armor and Shields|\n' +
+        '|Weapon Proficiencies|Simple and Martial weapons|' },
+    feature('Fighting Style', [1]), feature('Second Wind', [1]), feature('Action Surge', [2]),
+    feature('Ability Score Improvement', [4, 6, 8])
+  ]
+};
+const classes = [bard, fighter, paladin, lore, fighter2024];
 
 const species = [
   { key: 'srd_halfling', name: 'Halfling', document: srd, is_subspecies: false, traits: [
@@ -70,13 +85,23 @@ const species = [
     { name: 'Size', desc: 'Your size is Medium.' },
     { name: 'Speed', desc: 'Your base walking speed is 30 feet.' }
   ] },
-  { key: 'toh_darakhul', name: 'Darakhul', document: toh, is_subspecies: false, traits: [] }
+  { key: 'toh_darakhul', name: 'Darakhul', document: toh, is_subspecies: false, traits: [] },
+  { key: 'srd-2024_halfling', name: 'Halfling', document: srd24, is_subspecies: false, traits: [
+    { name: 'Size', type: 'SIZE', desc: 'Small (about 2–3 feet tall)' },
+    { name: 'Speed', type: 'SPEED', desc: '30 feet' },
+    { name: 'Luck', desc: 'When you roll a 1 on the d20 of a D20 Test, you can reroll the die.' }
+  ] }
 ];
 
 const backgrounds = [
   { key: 'srd_acolyte', name: 'Acolyte', document: srd, benefits: [
     { type: 'skill_proficiency', name: 'Skill Proficiencies', desc: 'Insight, Religion' },
     { type: 'feature', name: 'Shelter of the Faithful', desc: 'Temples help you.' }
+  ] },
+  { key: 'srd-2024_soldier', name: 'Soldier', document: srd24, benefits: [
+    { type: 'ability_score', name: 'Ability Scores', desc: 'Strength, Dexterity, Constitution' },
+    { type: 'feat', name: 'Feat', desc: 'Savage Attacker' },
+    { type: 'skill_proficiency', name: 'Skill Proficiencies', desc: 'Athletics and Intimidation' }
   ] }
 ];
 
@@ -108,7 +133,7 @@ function responder(url) {
   const allowed = params.get('document__key__in')?.split(',');
   const inScope = row => !allowed || allowed.includes(row.document.key);
 
-  if (path === '/v2/documents/') return page([srd, a5e, toh]);
+  if (path === '/v2/documents/') return page([srd, srd24, a5e, toh]);
   if (path === '/v2/classes/') {
     let rows = classes.filter(inScope);
     if (params.get('is_subclass') === 'false') rows = rows.filter(c => !c.subclass_of);
@@ -143,7 +168,7 @@ function builder() {
 
 describe('character builds', () => {
   test('a halfling is played as its subspecies, paired with the class its increases suit', async () => {
-    const build = await builder().build({ preferredRace: 'halfling', playstyle: 'support', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredRace: 'halfling', playstyle: 'support', focusLevel: 5 });
 
     assert.equal(build.race.name, 'Lightfoot');
     assert.equal(build.class.name, 'Bard', '+1 Cha suits a support Bard better than a Fighter');
@@ -154,7 +179,7 @@ describe('character builds', () => {
   });
 
   test('ability scores follow the standard array, species increases and ASIs', async () => {
-    const build = await builder().build({ preferredClass: 'bard', preferredRace: 'halfling', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard', preferredRace: 'halfling', focusLevel: 5 });
     const { base, atFirstLevel, atLevel } = build.abilityScores;
 
     assert.equal(base.charisma, 15);
@@ -164,7 +189,7 @@ describe('character builds', () => {
   });
 
   test('hit points, proficiency and spellcasting numbers follow the rules', async () => {
-    const build = await builder().build({ preferredClass: 'bard', preferredRace: 'halfling', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard', preferredRace: 'halfling', focusLevel: 5 });
     const con = build.abilityScores.modifiers.constitution;
 
     assert.equal(build.hitPoints.atLevel, 8 + 4 * 5 + 5 * con);
@@ -176,7 +201,7 @@ describe('character builds', () => {
   });
 
   test('spell suggestions stay within the class list and castable levels, one per level first', async () => {
-    const build = await builder().build({ preferredClass: 'bard', playstyle: 'support', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard', playstyle: 'support', focusLevel: 5 });
     const suggested = build.spellcasting.suggested;
 
     assert.equal(suggested.filter(s => s.level === 0).length, 3);
@@ -187,14 +212,14 @@ describe('character builds', () => {
   });
 
   test('a subclass is chosen once its level is reached, with its features', async () => {
-    const build = await builder().build({ preferredClass: 'bard', focusLevel: 3 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard', focusLevel: 3 });
     assert.equal(build.class.subclass.name, 'College of Lore');
     assert.deepEqual(build.class.subclass.features, ['Cutting Words']);
     assert.ok(build.levelProgression[2].choices.includes('Subclass: College of Lore'));
   });
 
   test('the level plan lists real features, never placeholders', async () => {
-    const build = await builder().build({ preferredClass: 'bard', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard', focusLevel: 5 });
     const everything = build.levelProgression.flatMap(p => [...p.features, ...p.choices]).join(' | ');
 
     assert.doesNotMatch(everything, /Level \d+ Bard features|Base class abilities|Class feature progression/);
@@ -203,10 +228,10 @@ describe('character builds', () => {
   });
 
   test('feats come from the build scope and must meet their prerequisites', async () => {
-    const bardBuild = await builder().build({ preferredClass: 'bard', focusLevel: 5 });
+    const bardBuild = await builder().build({ scope: SRD_2014, preferredClass: 'bard', focusLevel: 5 });
     assert.deepEqual(bardBuild.suggestedFeats, [], 'Grappler needs Strength 13; Ace Driver is out of scope');
 
-    const fighterBuild = await builder().build({ preferredClass: 'fighter', preferredRace: 'half-orc', playstyle: 'damage', focusLevel: 5 });
+    const fighterBuild = await builder().build({ scope: SRD_2014, preferredClass: 'fighter', preferredRace: 'half-orc', playstyle: 'damage', focusLevel: 5 });
     assert.deepEqual(fighterBuild.suggestedFeats.map(f => f.name), ['Grappler']);
   });
 
@@ -218,31 +243,46 @@ describe('character builds', () => {
   });
 
   test('a species outside the scope is an error that says where it is', async () => {
-    await assert.rejects(() => builder().build({ preferredRace: 'darakhul' }),
+    await assert.rejects(() => builder().build({ scope: SRD_2014, preferredRace: 'darakhul' }),
       /Species "darakhul" is not in sources srd-2014; Darakhul is in Tome of Heroes \(toh\)/);
   });
 
   test('an unknown class is an error, not a different class', async () => {
-    await assert.rejects(() => builder().build({ preferredClass: 'bardbarian' }), /Class "bardbarian" not found/);
+    await assert.rejects(() => builder().build({ scope: SRD_2014, preferredClass: 'bardbarian' }), /Class "bardbarian" not found/);
   });
 
   test('multiclass builds are rejected rather than quietly ignored', async () => {
-    await assert.rejects(() => builder().build({ allowMulticlass: true }), /Multiclass builds are not supported/);
+    await assert.rejects(() => builder().build({ scope: SRD_2014, allowMulticlass: true }), /Multiclass builds are not supported/);
   });
 
   test('an invalid playstyle or level is rejected', async () => {
-    await assert.rejects(() => builder().build({ playstyle: 'sneaky' }), /playstyle must be one of/);
-    await assert.rejects(() => builder().build({ focusLevel: 21 }), /focus_level must be an integer from 1 to 20/);
+    await assert.rejects(() => builder().build({ scope: SRD_2014, playstyle: 'sneaky' }), /playstyle must be one of/);
+    await assert.rejects(() => builder().build({ scope: SRD_2014, focusLevel: 21 }), /focus_level must be an integer from 1 to 20/);
   });
 
   test('a class with no spells in Open5e says so instead of listing none silently', async () => {
-    const build = await builder().build({ preferredClass: 'paladin', focusLevel: 5 });
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'paladin', focusLevel: 5 });
     assert.ok(build.warnings.some(w => /Open5e lists no Paladin spells/.test(w)));
   });
 
-  test('every source used is listed, and the default scope is noted', async () => {
-    const build = await builder().build({ preferredClass: 'bard' });
+  test('every source used is listed', async () => {
+    const build = await builder().build({ scope: SRD_2014, preferredClass: 'bard' });
     assert.deepEqual(build.sources.map(s => s.key), ['srd-2014']);
-    assert.ok(build.notes.some(n => /2014 SRD only/.test(n)));
+  });
+
+  test('builds default to the 2024 SRD, and say so', async () => {
+    const build = await builder().build({ preferredRace: 'halfling', preferredClass: 'fighter', playstyle: 'tank' });
+
+    assert.deepEqual(build.sources.map(s => s.key), ['srd-2024']);
+    assert.ok(build.notes.some(n => /2024 SRD only/.test(n)));
+    assert.equal(build.race.key, 'srd-2024_halfling');
+    assert.equal(build.background.name, 'Soldier');
+    assert.equal(build.abilityScores.atFirstLevel.strength, 17, 'the background gives +2, the species nothing');
+  });
+
+  test('a 2024 Small species wields Heavy weapons without the 2014 size penalty', async () => {
+    const build = await builder().build({ preferredRace: 'halfling', preferredClass: 'fighter', playstyle: 'tank' });
+
+    assert.ok(!build.weaknesses.some(w => /^Small/.test(w)), 'SRD 5.2 Heavy: Strength 13, not size');
   });
 });

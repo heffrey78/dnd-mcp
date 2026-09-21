@@ -82,12 +82,12 @@ describe('pickByName', () => {
     { name: 'Fireball', source: 'srd-2014' }
   ];
 
-  test('an exact name from the 2014 SRD wins over other books', () => {
-    assert.deepEqual(pickByName(rows, 'fireball', opts), rows[3]);
+  test('an exact name from the 2024 SRD wins over other books', () => {
+    assert.deepEqual(pickByName(rows, 'fireball', opts), rows[2]);
   });
 
-  test('without an SRD copy, the 2024 SRD beats third-party books', () => {
-    assert.deepEqual(pickByName(rows.slice(0, 3), 'Fireball', opts), rows[2]);
+  test('without a 2024 copy, the 2014 SRD beats third-party books', () => {
+    assert.deepEqual(pickByName([rows[0], rows[1], rows[3]], 'Fireball', opts), rows[3]);
   });
 
   test('an exact name beats a longer one from a preferred source', () => {
@@ -113,7 +113,8 @@ describe('pickByName', () => {
   });
 
   test('unlisted sources rank after every listed one', () => {
-    assert.ok(sourceRank('toh') > sourceRank('srd-2024'));
+    assert.ok(sourceRank('toh') > sourceRank('core'));
+    assert.ok(sourceRank('srd-2024') < sourceRank('srd-2014'));
     assert.ok(sourceRank('srd-2014') < sourceRank('core'));
   });
 });

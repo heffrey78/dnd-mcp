@@ -22,7 +22,7 @@ export interface CharacterBuildOptions {
   /** Multiclass builds are not generated; true is rejected. */
   allowMulticlass?: boolean;
   preferredAbilityScores?: Ability[];
-  /** Sources to build from. Default: the 2014 SRD only. */
+  /** Sources to build from. Default: the 2024 SRD only. */
   scope?: ContentScope;
 }
 

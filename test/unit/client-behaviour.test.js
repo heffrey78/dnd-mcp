@@ -273,6 +273,16 @@ describe('species lookup', () => {
 
     const race = await client.getRaceDetails('halfling');
 
+    assert.equal(race.url, 'https://api.open5e.com/v2/species/srd-2024_halfling/', 'the 2024 SRD by default');
+    assert.equal(race.speed, '30 feet');
+  });
+
+  test('without a 2024 row, the 2014 SRD species wins, prose and all', async () => {
+    mock = installMockFetch(() => page(halflingRows.filter(r => r.document.key !== 'srd-2024')));
+    const client = new Open5eClient();
+
+    const race = await client.getRaceDetails('halfling');
+
     assert.equal(race.url, 'https://api.open5e.com/v2/species/srd_halfling/');
     assert.equal(race.speed, 'Your base walking speed is 25 feet.');
     assert.equal(race.size, 'Your size is Small.');
@@ -413,8 +423,8 @@ describe('spells by class', () => {
     const result = await client.getSpellsByClass('bard');
     const spellRequest = mock.calls.find(u => u.pathname === '/v2/spells/');
 
-    assert.equal(result.classKey, 'srd_bard');
-    assert.equal(spellRequest.searchParams.get('classes__key'), 'srd_bard');
+    assert.equal(result.classKey, 'srd-2024_bard', 'the 2024 SRD by default');
+    assert.equal(spellRequest.searchParams.get('classes__key'), 'srd-2024_bard');
     assert.equal(mock.calls.find(u => u.pathname === '/v2/classes/').searchParams.get('is_subclass'), 'false');
   });
 

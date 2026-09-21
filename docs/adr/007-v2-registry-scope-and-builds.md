@@ -1,7 +1,8 @@
 # ADR-007: v2 only, a filter registry, source scopes, and a rules-based build engine
 
 ## Status
-Accepted. Supersedes decisions 2 and 3 of ADR-006.
+Accepted. Supersedes decisions 2 and 3 of ADR-006. Decision 6 is superseded
+by ADR-008 (default to the 2024 SRD).
 
 ## Context
 

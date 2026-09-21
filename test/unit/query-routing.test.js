@@ -65,10 +65,10 @@ describe('name queries are routed per endpoint', () => {
       { key: 'srd-2024_grappling', name: 'Grappling', desc: 'y', document: { key: 'srd-2024' } }
     ]));
 
-    assert.equal((await client.getSectionDetails('srd-2024_grappling')).description, 'y');
+    assert.equal((await client.getSectionDetails('srd_grappling')).description, 'x');
+    assert.equal((await client.getSectionDetails('srd_grappling')).parent, 'srd_combat');
     const byName = await client.getSectionDetails('grappling');
-    assert.equal(byName.key, 'srd_grappling', 'the 2014 SRD copy wins by default');
-    assert.equal(byName.parent, 'srd_combat');
+    assert.equal(byName.key, 'srd-2024_grappling', 'the 2024 SRD copy wins by default');
   });
 
   test('getAllSections lists sections without their text', async () => {

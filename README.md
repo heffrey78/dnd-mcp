@@ -56,8 +56,10 @@ restrict it to some sourcebooks:
 
 Without them, searches cover every source Open5e serves. Each result carries
 a `source` label (document key, title and ruleset), and lookups by name
-prefer the 2014 SRD, then the 2024 SRD. Character builds default to the 2014
-SRD only. An unknown ruleset or document is an error.
+prefer the 2024 SRD, then the 2014 SRD. Character builds default to the 2024
+SRD only (see [ADR-008](docs/adr/008-default-to-2024.md)); pass
+`ruleset: "5e-2014"` or `sources: ["srd-2014"]` for the older rules. An
+unknown ruleset or document is an error.
 
 ### Universal search
 
@@ -161,7 +163,7 @@ process. See [docs/testing.md](docs/testing.md).
 
 - **Duplicate names across books.** A search for `fireball` returns every
   sourcebook's Fireball, each labelled with its `source`. Detail lookups pick
-  one (2014 SRD first); pass `ruleset` or `sources` to choose another.
+  one (2024 SRD first); pass `ruleset` or `sources` to choose another.
 - **Uneven upstream filtering.** Open5e ignores many filter parameters and
   returns the whole collection. The client sends only verified parameters and
   matches the rest locally; see [docs/api-filters.md](docs/api-filters.md).

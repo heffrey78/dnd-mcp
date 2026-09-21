@@ -24,11 +24,11 @@ describe('MCP tools against the live API', () => {
     );
   });
 
-  test('get_spell_details prefers the SRD copy among six "Fireball"s', async () => {
+  test('get_spell_details prefers the 2024 SRD copy among six "Fireball"s', async () => {
     const spell = toolJson(await server.callTool('get_spell_details', { spell_name: 'fireball' }));
 
     assert.equal(spell.name, 'Fireball');
-    assert.equal(spell.source.key, 'srd-2014');
+    assert.equal(spell.source.key, 'srd-2024');
     assert.equal(spell.level, 3);
   });
 
@@ -47,7 +47,7 @@ describe('MCP tools against the live API', () => {
   test('get_class_details returns v2 features, SRD spell slots and subclasses', async () => {
     const bard = toolJson(await server.callTool('get_class_details', { class_name: 'bard' }));
 
-    assert.equal(bard.key, 'srd_bard');
+    assert.equal(bard.key, 'srd-2024_bard');
     assert.deepEqual(bard.primaryAbility, ['charisma']);
     assert.deepEqual(bard.spellSlotsByLevel[2], [4, 2]);
     assert.ok(bard.features.some(f => f.name === 'Bardic Inspiration' && f.levels.includes(1)));
@@ -127,9 +127,20 @@ describe('MCP tools against the live API', () => {
     assert.ok(race.resolved.inheritedTraits.some(t => t.name === 'Hunger for Flesh'));
   });
 
-  test('generate_character_build stays within the 2014 SRD and fills in real numbers', async () => {
+  test('generate_character_build defaults to the 2024 SRD', async () => {
     const build = toolJson(await server.callTool('generate_character_build', {
       preferred_race: 'halfling', playstyle: 'support', focus_level: 5
+    }));
+
+    assert.deepEqual(build.sources.map(s => s.key), ['srd-2024']);
+    assert.equal(build.race.key, 'srd-2024_halfling');
+    assert.equal(build.race.walkingSpeed, 30);
+    assert.ok(build.suggestedFeats.every(f => f.source.key === 'srd-2024'));
+  });
+
+  test('generate_character_build stays within the 2014 SRD when asked, and fills in real numbers', async () => {
+    const build = toolJson(await server.callTool('generate_character_build', {
+      preferred_race: 'halfling', playstyle: 'support', focus_level: 5, sources: ['srd-2014']
     }));
 
     assert.deepEqual(build.sources.map(s => s.key), ['srd-2014']);
