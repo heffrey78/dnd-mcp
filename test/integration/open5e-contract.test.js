@@ -21,16 +21,6 @@ async function get(path) {
 const names = body => (body.results || []).map(r => r.name);
 
 describe('Open5e filter contract', () => {
-  test('name__icontains filters v1 spells by name', async () => {
-    const body = await get('/v1/spells/?name__icontains=fireball');
-
-    assert.ok(body.count > 0);
-    assert.ok(
-      names(body).every(n => n.toLowerCase().includes('fireball')),
-      `expected only fireball-named spells, got: ${names(body).join(', ')}`
-    );
-  });
-
   test('name__icontains filters v1 monsters by name', async () => {
     const body = await get('/v1/monsters/?name__icontains=goblin');
 
@@ -54,18 +44,6 @@ describe('Open5e filter contract', () => {
       assert.ok(body.count > 0, `${path} returned nothing`);
       assert.ok(names(body).every(n => n.toLowerCase().includes(needle)), path);
     }
-  });
-
-  test('v1 search= is full-text, so it is unsuitable for name lookup', async () => {
-    // "fireball" matches spells that merely mention it in their description.
-    const body = await get('/v1/spells/?search=fireball');
-    const offName = names(body).filter(n => !n.toLowerCase().includes('fireball'));
-
-    assert.ok(
-      offName.length > 0,
-      'search= is expected to match description text; if this now filters by ' +
-      'name only, the routing in open5e-client.ts can be simplified'
-    );
   });
 
   test('v2 armor, weapons and conditions ignore name filters entirely', async () => {

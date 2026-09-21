@@ -10,7 +10,7 @@ afterEach(() => { mock?.restore(); mock = undefined; });
 
 describe('caching', () => {
   test('an identical request is served from cache instead of refetching', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('fireball');
@@ -20,7 +20,7 @@ describe('caching', () => {
   });
 
   test('a different query is fetched separately', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('fireball');
@@ -30,7 +30,7 @@ describe('caching', () => {
   });
 
   test('clearCache forces the next request back to the network', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('fireball');
@@ -41,7 +41,7 @@ describe('caching', () => {
   });
 
   test('cache stats are reported', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
     await client.searchSpells('fireball');
 
@@ -77,7 +77,7 @@ describe('error handling', () => {
       calls += 1;
       return calls === 1
         ? { __status: 500, __statusText: 'Error', __body: 'boom' }
-        : page([{ name: 'Fireball', level_int: 3 }]);
+        : page([{ name: 'Fireball', level: 3 }]);
     });
     const client = new Open5eClient();
 
@@ -91,7 +91,7 @@ describe('error handling', () => {
 
 describe('parameter sanitisation', () => {
   test('a query is trimmed before being sent', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('  fireball  ');
@@ -115,21 +115,22 @@ describe('parameter sanitisation', () => {
   });
 
   test('a whitespace-only query sends no filter', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('   ');
     assert.equal(mock.paramsOf().name__icontains, undefined);
   });
 
-  test('spell level and school filters are forwarded', async () => {
-    mock = installMockFetch(() => page([{ name: 'Fireball', level_int: 3 }]));
+  test('spell level and school filters are forwarded under their v2 names', async () => {
+    mock = installMockFetch(() => page([{ name: 'Fireball', level: 3 }]));
     const client = new Open5eClient();
 
     await client.searchSpells('fire', { level: 3, school: 'Evocation' });
     const params = mock.paramsOf();
-    assert.equal(params.spell_level, '3');
-    assert.equal(params.school, 'Evocation');
+    assert.equal(params.level, '3');
+    assert.equal(params.school__key, 'evocation', 'school keys are lower case');
+    assert.equal(params.school, undefined, 'school= is ignored by /v2/spells/');
   });
 });
 
@@ -172,17 +173,24 @@ describe('field mapping', () => {
     assert.equal(race.speed, '');
   });
 
-  test('a spell maps onto the documented MCP shape', async () => {
+  test('a v2 spell maps onto the documented MCP shape', async () => {
     mock = installMockFetch(() => page([{
+      key: 'srd_fireball',
       name: 'Fireball',
-      level_int: 3,
-      school: 'Evocation',
-      casting_time: '1 action',
-      range: '150 feet',
-      components: 'V, S, M',
-      duration: 'Instantaneous',
+      level: 3,
+      school: { name: 'Evocation', key: 'evocation' },
+      casting_time: 'action',
+      range_text: '150 feet',
+      verbal: true, somatic: true, material: true,
+      material_specified: 'A tiny ball of bat guano and sulfur.',
+      duration: 'instantaneous',
       desc: 'A bright streak flashes.',
-      slug: 'fireball'
+      higher_level: 'Add 1d6 per slot level above 3rd.',
+      classes: [{ name: 'Sorcerer', key: 'srd_sorcerer' }, { name: 'Wizard', key: 'srd_wizard' }],
+      saving_throw_ability: 'dexterity',
+      damage_roll: '8d6',
+      damage_types: ['fire'],
+      document: { key: 'srd-2014', display_name: '5e 2014 Rules', gamesystem: { key: '5e-2014' } }
     }]));
     const client = new Open5eClient();
 
@@ -191,12 +199,29 @@ describe('field mapping', () => {
     assert.equal(spell.level, 3);
     assert.equal(spell.school, 'Evocation');
     assert.equal(spell.castingTime, '1 action');
+    assert.equal(spell.range, '150 feet');
+    assert.equal(spell.components, 'V, S, M (A tiny ball of bat guano and sulfur.)');
+    assert.deepEqual(spell.classes, ['Sorcerer', 'Wizard']);
+    assert.equal(spell.savingThrow, 'dexterity');
+    assert.deepEqual(spell.damageTypes, ['fire']);
+    assert.match(spell.description, /At Higher Levels: Add 1d6/);
+    assert.deepEqual(spell.source, { key: 'srd-2014', name: '5e 2014 Rules', ruleset: '5e-2014' });
+    assert.equal(spell.url, 'https://api.open5e.com/v2/spells/srd_fireball/');
+  });
+
+  test('v2 casting-time keys are spelled out', async () => {
+    mock = installMockFetch(() => page(['bonus-action', 'reaction', '10minutes', '1hour']
+      .map((casting_time, i) => ({ key: `s${i}`, name: `Spell ${i}`, casting_time }))));
+    const client = new Open5eClient();
+
+    const times = (await client.searchSpells()).results.map(s => s.castingTime);
+    assert.deepEqual(times, ['1 bonus action', '1 reaction', '10 minutes', '1 hour']);
   });
 
   test('hasMore reflects the presence of a next page', async () => {
     mock = installMockFetch(() => page(
-      [{ name: 'Fireball', level_int: 3 }],
-      { count: 50, next: 'https://api.open5e.com/v1/spells/?page=2' }
+      [{ name: 'Fireball', level: 3 }],
+      { count: 50, next: 'https://api.open5e.com/v2/spells/?page=2' }
     ));
     const client = new Open5eClient();
 
@@ -355,5 +380,57 @@ describe('species lookup', () => {
     assert.equal(mock.calls.length, 2);
     assert.deepEqual(mock.paramsOf(1).subspecies_of__key__in.split(','),
       parents.map(p => p.key));
+  });
+});
+
+describe('spells by class', () => {
+  const classes = [
+    { key: 'srd_bard', name: 'Bard', document: { key: 'srd-2014', gamesystem: { key: '5e-2014' } } },
+    { key: 'srd-2024_bard', name: 'Bard', document: { key: 'srd-2024', gamesystem: { key: '5e-2024' } } },
+    { key: 'srd_wizard', name: 'Wizard', document: { key: 'srd-2014', gamesystem: { key: '5e-2014' } } }
+  ];
+  const documents = [
+    { key: 'srd-2014', display_name: '5e 2014 Rules', gamesystem: { key: '5e-2014' } },
+    { key: 'srd-2024', display_name: '5e 2024 Rules', gamesystem: { key: '5e-2024' } }
+  ];
+
+  function responder(url) {
+    if (url.pathname === '/v2/documents/') return page(documents);
+    if (url.pathname === '/v2/classes/') {
+      const allowed = url.searchParams.get('document__key__in')?.split(',');
+      return page(classes.filter(c => !allowed || allowed.includes(c.document.key)));
+    }
+    return page([{ key: 'srd_healing-word', name: 'Healing Word', level: 1 }]);
+  }
+
+  test('the class name resolves to the SRD class key, which filters the spells', async () => {
+    mock = installMockFetch(responder);
+    const client = new Open5eClient();
+
+    const result = await client.getSpellsByClass('bard');
+    const spellRequest = mock.calls.find(u => u.pathname === '/v2/spells/');
+
+    assert.equal(result.classKey, 'srd_bard');
+    assert.equal(spellRequest.searchParams.get('classes__key'), 'srd_bard');
+    assert.equal(mock.calls.find(u => u.pathname === '/v2/classes/').searchParams.get('is_subclass'), 'false');
+  });
+
+  test('a 2024 scope resolves the 2024 class and scopes the spells too', async () => {
+    mock = installMockFetch(responder);
+    const client = new Open5eClient();
+
+    const result = await client.getSpellsByClass('bard', { scope: { ruleset: '5e-2024' } });
+    const spellRequest = mock.calls.find(u => u.pathname === '/v2/spells/');
+
+    assert.equal(result.classKey, 'srd-2024_bard');
+    assert.equal(spellRequest.searchParams.get('document__key__in'), 'srd-2024');
+  });
+
+  test('an unknown class is an error, not every spell', async () => {
+    mock = installMockFetch(responder);
+    const client = new Open5eClient();
+
+    await assert.rejects(() => client.getSpellsByClass('bardbarian'), /Class "bardbarian" not found/);
+    assert.equal(mock.calls.filter(u => u.pathname === '/v2/spells/').length, 0);
   });
 });

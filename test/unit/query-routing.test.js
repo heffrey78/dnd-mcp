@@ -24,12 +24,11 @@ afterEach(() => {
 describe('name queries are routed per endpoint', () => {
   // Endpoints where Open5e honours name__icontains server-side.
   const serverFiltered = [
-    ['searchSpells', '/v1/spells/', [{ name: 'Fireball', level_int: 3 }]],
+    ['searchSpells', '/v2/spells/', [{ name: 'Fireball', level: 3 }]],
     ['searchMonsters', '/v1/monsters/', [{ name: 'Goblin' }]],
     ['searchMagicItems', '/v1/magicitems/', [{ name: 'Bag of Beans' }]],
     ['searchFeats', '/v2/feats/', [{ name: 'Alert' }]],
     ['searchBackgrounds', '/v2/backgrounds/', [{ name: 'Soldier' }]],
-    ['searchSpellLists', '/v1/spelllist/', [{ name: 'wizard', spells: [] }]],
     ['searchRaces', '/v2/species/', [{ name: 'Elf', key: 'elf', traits: [] }]]
   ];
 
@@ -61,7 +60,7 @@ describe('name queries are routed per endpoint', () => {
   });
 
   test('no name filter is sent when no query is given', async () => {
-    mockWith(page([{ name: 'Fireball', level_int: 3 }]));
+    mockWith(page([{ name: 'Fireball', level: 3 }]));
     await client.searchSpells();
 
     const params = mock.paramsOf();

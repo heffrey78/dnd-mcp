@@ -4,7 +4,7 @@ import {
 } from './open5e-endpoints.js';
 import {
   type ContentScope, type SourceLabel,
-  pickByName, resolveScope, sourceOf, toSourceLabel
+  documentKeyOf, pickByName, resolveScope, sourceOf, toSourceLabel
 } from './sources.js';
 
 export type { ContentScope, SourceLabel } from './sources.js';
@@ -20,16 +20,21 @@ export interface EnhancedSpellData {
   duration: string;
   description: string;
   classes: string[];
+  key: string;
+  source: SourceLabel;
   url: string;
-  
+
   // Enhanced fields from Open5e API
   ritual: boolean;
   concentration: boolean;
   higherLevel?: string;
   damageRoll?: string;
+  damageTypes: string[];
   savingThrow?: string;
+  attackRoll: boolean;
   targetType?: string;
   targetCount?: number;
+  reactionCondition?: string;
   componentDetails: {
     verbal: boolean;
     somatic: boolean;
@@ -226,20 +231,6 @@ export interface SectionData {
   description: string;
   parent?: string;
   document: string;
-  url: string;
-}
-
-export interface SpellListData {
-  slug: string;
-  name: string;
-  description: string;
-  spells: string[];
-  spellCount: number;
-  document: {
-    slug: string;
-    title: string;
-    url: string;
-  };
   url: string;
 }
 
@@ -620,34 +611,14 @@ export class Open5eClient {
     return description;
   }
 
-  private formatDescriptionV1(spell: any): string {
-    let description = spell.desc || '';
-    if (spell.higher_level) {
-      description += `\n\nAt Higher Levels: ${spell.higher_level}`;
+  /** v2 casting times are keys: "action", "bonus-action", "10minutes". */
+  private formatCastingTime(value: unknown): string {
+    const text = String(value ?? '');
+    if (['action', 'bonus-action', 'reaction', 'round', 'turn'].includes(text)) {
+      return `1 ${text.replace('-', ' ')}`;
     }
-    return description;
-  }
-
-  private parseClassesV1(spell: any): string[] {
-    const classes: string[] = [];
-    
-    // Parse from dnd_class field (comma-separated string)
-    if (spell.dnd_class) {
-      const classString = spell.dnd_class.split(',').map((c: string) => c.trim());
-      classes.push(...classString);
-    }
-    
-    // Parse from spell_lists array
-    if (spell.spell_lists && Array.isArray(spell.spell_lists)) {
-      spell.spell_lists.forEach((cls: string) => {
-        const className = cls.charAt(0).toUpperCase() + cls.slice(1);
-        if (!classes.includes(className)) {
-          classes.push(className);
-        }
-      });
-    }
-    
-    return classes;
+    const match = /^(\d+)([a-z]+)$/.exec(text);
+    return match ? `${match[1]} ${match[2]}` : text;
   }
 
   private extractPrimaryAbilities(classData: any): string[] {
@@ -658,142 +629,119 @@ export class Open5eClient {
     return [];
   }
 
-  async searchSpells(query?: string, options: {
-    level?: number;
-    school?: string;
-    limit?: number;
-    ordering?: string;
-  } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.level !== undefined) params.spell_level = options.level;
-    if (options.school) params.school = options.school;
-    if (options.limit) params.limit = options.limit;
-    if (options.ordering) params.ordering = options.ordering;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/spells/', params);
-
-    const transformedResults: EnhancedSpellData[] = response.results.map(spell => ({
-      // Current MCP format fields
-      name: spell.name,
-      level: spell.level_int || 0,
-      school: spell.school,
-      castingTime: spell.casting_time,
-      range: spell.range,
-      components: spell.components,
-      duration: spell.duration,
-      description: this.formatDescriptionV1(spell),
-      classes: this.parseClassesV1(spell),
-      url: `https://api.open5e.com/v1/spells/${spell.slug}/`,
-      
-      // Enhanced fields
-      ritual: spell.can_be_cast_as_ritual || false,
-      concentration: spell.requires_concentration || false,
-      higherLevel: spell.higher_level,
-      damageRoll: '', // Not available in v1
-      savingThrow: '', // Not available in v1
-      targetType: '', // Not available in v1
-      targetCount: undefined, // Not available in v1
-      componentDetails: {
-        verbal: spell.requires_verbal_components || false,
-        somatic: spell.requires_somatic_components || false,
-        material: spell.requires_material_components || false,
-        materialSpecified: spell.material,
-        materialCost: undefined, // Not available in v1
-        materialConsumed: false // Not available in v1
-      }
-    }));
-
+  private transformSpell(spell: any): EnhancedSpellData {
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      name: spell.name,
+      key: spell.key ?? '',
+      level: spell.level ?? 0,
+      school: spell.school?.name ?? '',
+      castingTime: this.formatCastingTime(spell.casting_time),
+      range: spell.range_text ?? '',
+      components: this.formatComponents(spell),
+      duration: spell.duration ?? '',
+      description: this.formatDescription(spell),
+      classes: (spell.classes ?? []).map((cls: any) => cls.name),
+      source: sourceOf(spell),
+      url: spell.key ? `https://api.open5e.com/v2/spells/${spell.key}/` : '',
+
+      ritual: Boolean(spell.ritual),
+      concentration: Boolean(spell.concentration),
+      higherLevel: spell.higher_level || undefined,
+      damageRoll: spell.damage_roll || undefined,
+      damageTypes: spell.damage_types ?? [],
+      savingThrow: spell.saving_throw_ability || undefined,
+      attackRoll: Boolean(spell.attack_roll),
+      targetType: spell.target_type || undefined,
+      targetCount: spell.target_count ?? undefined,
+      reactionCondition: spell.reaction_condition || undefined,
+      componentDetails: {
+        verbal: Boolean(spell.verbal),
+        somatic: Boolean(spell.somatic),
+        material: Boolean(spell.material),
+        materialSpecified: spell.material_specified || undefined,
+        materialCost: spell.material_cost ? Number(spell.material_cost) : undefined,
+        materialConsumed: Boolean(spell.material_consumed)
+      }
     };
   }
 
-  async getSpellDetails(spellName: string): Promise<EnhancedSpellData | null> {
-    // Search for the spell first
-    const searchResults = await this.searchSpells(spellName, { limit: 5 });
-    
-    // Find exact match or closest match
-    const exactMatch = searchResults.results.find(
-      spell => spell.name.toLowerCase() === spellName.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Return first result if no exact match but results exist
-    return searchResults.results.length > 0 ? searchResults.results[0] : null;
+  async searchSpells(query?: string, options: {
+    level?: number;
+    maxLevel?: number;
+    school?: string;
+    classKey?: string;
+    limit?: number;
+    ordering?: string;
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
+    const response = await this.query('spells', {
+      name: query,
+      level: options.level,
+      maxLevel: options.maxLevel,
+      // School keys are lower case ("evocation"); accept "Evocation" too.
+      school: options.school?.trim().toLowerCase(),
+      classKey: options.classKey,
+      documents: await this.scopeDocuments(options.scope)
+    }, { limit: options.limit, ordering: options.ordering });
+
+    return {
+      count: response.count,
+      results: response.rows.map(spell => this.transformSpell(spell)),
+      hasMore: response.hasMore
+    };
   }
 
-  async getSpellsByLevel(level: number): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
-    // Remove ordering to avoid API timeouts with larger result sets
-    return this.searchSpells('', { level, limit: 20 });
+  async getSpellDetails(spellName: string, scope?: ContentScope): Promise<EnhancedSpellData | null> {
+    // Six sourcebooks have a "Fireball"; fetch enough to see them all and rank.
+    const { results } = await this.searchSpells(spellName, { limit: 50, scope });
+    return this.pickResult(results, spellName);
   }
 
-  async getSpellsByClass(className: string): Promise<EnhancedSpellData[]> {
-    // Use class filter directly in the API call when possible
-    const allSpells: EnhancedSpellData[] = [];
-    let hasMore = true;
-    let page = 1;
-    const limit = 50;
-    
-    // Fetch multiple pages to get enough spells for the class
-    while (hasMore && allSpells.length < 100) {
-      try {
-        const params: Record<string, any> = { limit, page };
-        const response = await this.makeRequest<Open5eResponse<any>>('/v1/spells/', params);
-        
-        const pageResults: EnhancedSpellData[] = response.results.map(spell => ({
-          name: spell.name,
-          level: spell.level_int || 0,
-          school: spell.school,
-          castingTime: spell.casting_time,
-          range: spell.range,
-          components: spell.components,
-          duration: spell.duration,
-          description: this.formatDescriptionV1(spell),
-          classes: this.parseClassesV1(spell),
-          url: `https://api.open5e.com/v1/spells/${spell.slug}/`,
-          ritual: spell.can_be_cast_as_ritual || false,
-          concentration: spell.requires_concentration || false,
-          higherLevel: spell.higher_level,
-          damageRoll: '',
-          savingThrow: '',
-          targetType: '',
-          targetCount: undefined,
-          componentDetails: {
-            verbal: spell.requires_verbal_components || false,
-            somatic: spell.requires_somatic_components || false,
-            material: spell.requires_material_components || false,
-            materialSpecified: spell.material,
-            materialCost: undefined,
-            materialConsumed: false
-          }
-        }));
-        
-        allSpells.push(...pageResults);
-        hasMore = !!response.next;
-        page++;
-        
-        // Add small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        break; // Stop if there's an error
-      }
-    }
-    
-    // Filter spells by class
-    const filteredSpells = allSpells.filter(spell =>
-      spell.classes.some(cls => 
-        cls.toLowerCase().includes(className.toLowerCase())
-      )
-    );
-    
-    return filteredSpells.slice(0, 20); // Limit to 20 results for performance
+  async getSpellsByLevel(level: number, options: {
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
+    return this.searchSpells('', { level, limit: options.limit ?? 20, scope: options.scope });
+  }
+
+  /**
+   * Spells on a class's list. The class is resolved to a key within the scope
+   * first ("bard" is srd_bard for 2014 content, srd-2024_bard for 2024), then
+   * filtered server-side with classes__key.
+   */
+  async getSpellsByClass(className: string, options: {
+    level?: number;
+    maxLevel?: number;
+    limit?: number;
+    scope?: ContentScope;
+  } = {}): Promise<{ class: string; classKey: string; count: number; results: EnhancedSpellData[]; hasMore: boolean }> {
+    const cls = await this.findBaseClass(className, options.scope);
+    if (!cls) throw new Error(`Class "${className}" not found`);
+
+    const spells = await this.searchSpells('', {
+      classKey: cls.key,
+      level: options.level,
+      maxLevel: options.maxLevel,
+      limit: options.limit ?? 20,
+      ordering: 'level',
+      scope: options.scope
+    });
+    return { class: cls.name, classKey: cls.key, ...spells };
+  }
+
+  /** A base (non-subclass) class row by name or key, ranked like any lookup. */
+  private async findBaseClass(className: string, scope?: ContentScope): Promise<{ key: string; name: string } | null> {
+    const needle = className.trim().toLowerCase();
+    const { rows } = await this.query('classes', {
+      isSubclass: false,
+      documents: await this.scopeDocuments(scope)
+    }, { limit: PAGE_MAX });
+
+    const byKey = rows.find(row => row.key === needle);
+    if (byKey) return { key: byKey.key, name: byKey.name };
+
+    const best = pickByName(rows, needle, { nameOf: row => row.name, sourceKeyOf: documentKeyOf });
+    return best ? { key: best.key, name: best.name } : null;
   }
 
   async searchRaces(query?: string, options: {
@@ -1407,91 +1355,6 @@ export class Open5eClient {
     return response.results;
   }
 
-  // Spell Lists functionality
-  async searchSpellLists(query?: string, options: {
-    limit?: number;
-  } = {}): Promise<{ count: number; results: SpellListData[]; hasMore: boolean }> {
-    const params: Record<string, any> = {};
-    
-    if (query) params.name__icontains = query;
-    if (options.limit) params.limit = options.limit;
-
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/spelllist/', params);
-
-    const transformedResults: SpellListData[] = response.results.map(spellList => ({
-      slug: spellList.slug,
-      name: spellList.name || spellList.slug.charAt(0).toUpperCase() + spellList.slug.slice(1),
-      description: spellList.desc || `Spell list for ${spellList.name || spellList.slug} class`,
-      spells: spellList.spells || [],
-      spellCount: (spellList.spells || []).length,
-      document: {
-        slug: spellList.document__slug || '',
-        title: spellList.document__title || 'Unknown Source',
-        url: spellList.document__url || ''
-      },
-      url: `https://api.open5e.com/v1/spelllist/${spellList.slug}/`
-    }));
-
-    return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
-    };
-  }
-
-  async getSpellListDetails(className: string): Promise<SpellListData | null> {
-    // Get all spell lists and find match
-    const allResults = await this.searchSpellLists('', { limit: 20 });
-    
-    // Find exact match first (by name or slug)
-    const exactMatch = allResults.results.find(
-      spellList => spellList.name.toLowerCase() === className.toLowerCase() ||
-                   spellList.slug.toLowerCase() === className.toLowerCase()
-    );
-    
-    if (exactMatch) {
-      return exactMatch;
-    }
-    
-    // Try partial match by name
-    const partialMatch = allResults.results.find(
-      spellList => spellList.name.toLowerCase().includes(className.toLowerCase())
-    );
-    
-    return partialMatch || null;
-  }
-
-  async getAllSpellLists(): Promise<SpellListData[]> {
-    // Get all spell lists for quick reference
-    const response = await this.searchSpellLists('', { limit: 20 });
-    return response.results;
-  }
-
-  async getSpellsForClass(className: string): Promise<EnhancedSpellData[]> {
-    // Get the spell list for the class
-    const spellList = await this.getSpellListDetails(className);
-    
-    if (!spellList || spellList.spells.length === 0) {
-      return [];
-    }
-
-    // Get detailed spell information for each spell in the list
-    const spellPromises = spellList.spells.slice(0, 50).map(async (spellSlug) => {
-      try {
-        // Convert slug to search term
-        const searchTerm = spellSlug.replace(/-/g, ' ');
-        const spellDetails = await this.getSpellDetails(searchTerm);
-        return spellDetails;
-      } catch (error) {
-        console.warn(`Failed to get details for spell: ${spellSlug}`);
-        return null;
-      }
-    });
-
-    const spellResults = await Promise.all(spellPromises);
-    return spellResults.filter(spell => spell !== null) as EnhancedSpellData[];
-  }
-
   // DM Encounter Builder functionality
   private readonly CR_TO_XP: Record<string, number> = {
     '0': 10, '1/8': 25, '1/4': 50, '1/2': 100,
@@ -1979,7 +1842,7 @@ export class Open5eClient {
 
   private async getKeySpells(cls: EnhancedClassData, level: number): Promise<EnhancedSpellData[]> {
     try {
-      const classSpells = await this.getSpellsForClass(cls.name);
+      const classSpells = (await this.getSpellsByClass(cls.name, { limit: 100 })).results;
       
       // Filter spells by level and importance
       const keySpells = classSpells

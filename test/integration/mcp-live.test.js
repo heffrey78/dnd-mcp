@@ -24,6 +24,26 @@ describe('MCP tools against the live API', () => {
     );
   });
 
+  test('get_spell_details prefers the SRD copy among six "Fireball"s', async () => {
+    const spell = toolJson(await server.callTool('get_spell_details', { spell_name: 'fireball' }));
+
+    assert.equal(spell.name, 'Fireball');
+    assert.equal(spell.source.key, 'srd-2014');
+    assert.equal(spell.level, 3);
+  });
+
+  test('get_spells_by_class honours the ruleset and level cap', async () => {
+    const body = toolJson(await server.callTool('get_spells_by_class', {
+      class_name: 'bard', ruleset: '5e-2024', max_level: 1, limit: 100
+    }));
+
+    assert.equal(body.classKey, 'srd-2024_bard');
+    assert.ok(body.spells.length > 0);
+    assert.ok(body.spells.every(s => s.source.ruleset === '5e-2024'),
+      `off-ruleset spells: ${body.spells.filter(s => s.source.ruleset !== '5e-2024').map(s => s.name)}`);
+    assert.ok(body.spells.every(s => s.level <= 1));
+  });
+
   test('search_monsters returns only monsters matching the name', async () => {
     const body = toolJson(await server.callTool('search_monsters', { query: 'goblin' }));
 

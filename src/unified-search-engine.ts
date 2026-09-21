@@ -6,7 +6,7 @@ import NodeCache from 'node-cache';
 export type ContentType = 
   | 'spells' | 'monsters' | 'races' | 'classes'
   | 'weapons' | 'armor' | 'magic-items' | 'feats' 
-  | 'conditions' | 'backgrounds' | 'sections' | 'spell-lists';
+  | 'conditions' | 'backgrounds' | 'sections';
 
 // Unified search options interface
 export interface UnifiedSearchOptions {
@@ -222,9 +222,6 @@ export class UnifiedSearchEngine {
         case 'sections':
           data = await this.open5eClient.searchSections(options.query, { limit: options.limit });
           break;
-        case 'spell-lists':
-          data = await this.open5eClient.searchSpellLists(options.query, { limit: options.limit });
-          break;
         default:
           throw new Error(`Unsupported content type: ${contentType}`);
       }
@@ -352,8 +349,6 @@ export class UnifiedSearchEngine {
         return item.description || item.desc || '';
       case 'sections':
         return item.description || item.desc || '';
-      case 'spell-lists':
-        return item.description || item.desc || `Spell list for ${item.name}`;
       default:
         return item.description || item.desc || '';
     }
@@ -538,8 +533,7 @@ export class UnifiedSearchEngine {
       'feats': 0.7,
       'conditions': 0.6,
       'backgrounds': 0.6,
-      'sections': 0.5,
-      'spell-lists': 0.5
+      'sections': 0.5
     };
     
     score *= typeWeights[item.contentType] || 1.0;
@@ -662,7 +656,7 @@ export class UnifiedSearchEngine {
     return [
       'spells', 'monsters', 'races', 'classes',
       'weapons', 'armor', 'magic-items', 'feats',
-      'conditions', 'backgrounds', 'sections', 'spell-lists'
+      'conditions', 'backgrounds', 'sections'
     ];
   }
 

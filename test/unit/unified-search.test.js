@@ -37,7 +37,7 @@ describe('option validation', () => {
 
 describe('content type selection', () => {
   test('only the requested content types are queried', async () => {
-    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level_int: 3 }] });
+    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level: 3 }] });
 
     const result = await engine.unifiedSearch({ query: 'fireball', contentTypes: ['spells'] });
 
@@ -59,7 +59,7 @@ describe('result assembly', () => {
   test('results are capped at the requested limit per content type', async () => {
     const engine = mockCatalogue({
       spells: Array.from({ length: 20 }, (_, i) => ({
-        name: `Dragon Spell ${i}`, level_int: 1, slug: `s${i}`
+        name: `Dragon Spell ${i}`, level: 1, key: `s${i}`
       }))
     });
 
@@ -74,7 +74,7 @@ describe('result assembly', () => {
   test('the limit is clamped to the supported range', async () => {
     const engine = mockCatalogue({
       spells: Array.from({ length: 50 }, (_, i) => ({
-        name: `Dragon Spell ${i}`, level_int: 1, slug: `s${i}`
+        name: `Dragon Spell ${i}`, level: 1, key: `s${i}`
       }))
     });
 
@@ -96,7 +96,7 @@ describe('result assembly', () => {
     mock = installMockFetch(url =>
       url.pathname.includes('monsters')
         ? { __status: 500, __statusText: 'Error', __body: 'boom' }
-        : page([{ name: 'Dragon Spell', level_int: 1, slug: 'ds' }])
+        : page([{ name: 'Dragon Spell', level: 1 }])
     );
     const engine = new UnifiedSearchEngine();
 
@@ -109,7 +109,7 @@ describe('result assembly', () => {
   });
 
   test('the response reports the query and an execution time', async () => {
-    const engine = mockCatalogue({ spells: [{ name: 'Dragon Spell', level_int: 1 }] });
+    const engine = mockCatalogue({ spells: [{ name: 'Dragon Spell', level: 1 }] });
     const result = await engine.unifiedSearch({ query: 'dragon', contentTypes: ['spells'] });
 
     assert.equal(result.query, 'dragon');
@@ -122,8 +122,8 @@ describe('ranking', () => {
   test('an exact name match outranks a partial one', async () => {
     const engine = mockCatalogue({
       spells: [
-        { name: 'Delayed Blast Fireball', level_int: 7, slug: 'dbf' },
-        { name: 'Fireball', level_int: 3, slug: 'fb' }
+        { name: 'Delayed Blast Fireball', level: 7 },
+        { name: 'Fireball', level: 3 }
       ]
     });
 
@@ -137,9 +137,9 @@ describe('ranking', () => {
   test('sorting by name orders results alphabetically', async () => {
     const engine = mockCatalogue({
       spells: [
-        { name: 'Zone of Truth', level_int: 2, slug: 'z' },
-        { name: 'Aid', level_int: 2, slug: 'a' },
-        { name: 'Mage Hand', level_int: 0, slug: 'm' }
+        { name: 'Zone of Truth', level: 2 },
+        { name: 'Aid', level: 2 },
+        { name: 'Mage Hand', level: 0 }
       ]
     });
 
@@ -154,7 +154,7 @@ describe('ranking', () => {
 
 describe('caching', () => {
   test('an identical search is served from cache', async () => {
-    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level_int: 3 }] });
+    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level: 3 }] });
 
     await engine.unifiedSearch({ query: 'fireball', contentTypes: ['spells'] });
     const before = mock.calls.length;
@@ -164,7 +164,7 @@ describe('caching', () => {
   });
 
   test('clearCache forces a refetch', async () => {
-    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level_int: 3 }] });
+    const engine = mockCatalogue({ spells: [{ name: 'Fireball', level: 3 }] });
 
     await engine.unifiedSearch({ query: 'fireball', contentTypes: ['spells'] });
     const before = mock.calls.length;

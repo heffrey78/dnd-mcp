@@ -7,7 +7,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { Open5eClient } from './open5e-client.js';
+import { Open5eClient, type ContentScope } from './open5e-client.js';
 import { UnifiedSearchEngine, ContentType } from './unified-search-engine.js';
 
 // Validation utilities
@@ -55,6 +55,57 @@ function validateOptionalNumberInput(value: any, fieldName: string, min: number 
     throw new Error(`${fieldName} must be between ${min} and ${max}`);
   }
   return value;
+}
+
+/** A string argument that may be omitted; present, it must be a string. */
+function optionalString(value: any, fieldName: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`${fieldName} must be a string`);
+  }
+  return value.trim();
+}
+
+/** Schema for the arguments that restrict a tool to some sourcebooks. */
+const SCOPE_PROPERTIES = {
+  ruleset: {
+    type: 'string',
+    description: 'Only content for this game system: "5e-2014", "5e-2024" or "a5e" (optional; default: all sources, each result labelled with its source)',
+  },
+  sources: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Only content from these Open5e documents, e.g. ["srd-2014"] (optional)',
+  },
+} as const;
+
+/** Tools that accept SCOPE_PROPERTIES. Passing them to any other tool is an error. */
+const SCOPED_TOOLS = new Set([
+  'search_spells', 'get_spell_details', 'get_spell_by_level', 'get_spells_by_class',
+  'search_races', 'get_race_details',
+  'search_weapons', 'search_armor', 'get_armor_details',
+  'search_feats', 'get_feat_details',
+  'search_conditions', 'get_condition_details', 'get_all_conditions',
+  'search_backgrounds', 'get_background_details'
+]);
+
+function parseScope(toolName: string, args: Record<string, any> | undefined): ContentScope | undefined {
+  const { ruleset, sources } = args ?? {};
+  if (ruleset === undefined && sources === undefined) return undefined;
+  if (!SCOPED_TOOLS.has(toolName)) {
+    throw new Error(`${toolName} does not take ruleset or sources`);
+  }
+  if (ruleset !== undefined && typeof ruleset !== 'string') {
+    throw new Error('ruleset must be a string');
+  }
+  if (sources !== undefined &&
+      (!Array.isArray(sources) || sources.some(source => typeof source !== 'string'))) {
+    throw new Error('sources must be an array of document keys');
+  }
+  return {
+    ruleset: ruleset?.trim(),
+    sources: sources?.map((source: string) => source.trim())
+  };
 }
 
 /** Longest string any tool argument may carry. */
@@ -111,7 +162,7 @@ const tools: Tool[] = [
           type: 'array',
           items: {
             type: 'string',
-            enum: ['spells', 'monsters', 'races', 'classes', 'weapons', 'armor', 'magic-items', 'feats', 'conditions', 'backgrounds', 'sections', 'spell-lists']
+            enum: ['spells', 'monsters', 'races', 'classes', 'weapons', 'armor', 'magic-items', 'feats', 'conditions', 'backgrounds', 'sections']
           },
           description: 'Filter by specific content types (optional - searches all if not specified)'
         },
@@ -162,6 +213,10 @@ const tools: Tool[] = [
           type: 'string',
           description: 'Filter by magic school (e.g., evocation, necromancy)',
         },
+        class_name: {
+          type: 'string',
+          description: 'Only spells on this class\'s spell list (e.g., "bard")',
+        },
         limit: {
           type: 'number',
           description: 'Maximum number of results to return',
@@ -170,7 +225,8 @@ const tools: Tool[] = [
         },
         ordering: {
           type: 'string',
-          description: 'Sort results by field (name, level, -level for descending)',
+          description: 'Sort order',
+          enum: ['name', '-name', 'level', '-level'],
         },
       },
     },
@@ -207,13 +263,31 @@ const tools: Tool[] = [
   },
   {
     name: 'get_spells_by_class',
-    description: 'Get all spells available to a specific class',
+    description: 'Get the spells on a class\'s spell list, lowest level first',
     inputSchema: {
       type: 'object',
       properties: {
         class_name: {
           type: 'string',
           description: 'The name of the class (e.g., "wizard", "cleric", "bard")',
+        },
+        level: {
+          type: 'number',
+          description: 'Only spells of this level (0 for cantrips)',
+          minimum: 0,
+          maximum: 9,
+        },
+        max_level: {
+          type: 'number',
+          description: 'Only spells of this level or lower',
+          minimum: 0,
+          maximum: 9,
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of spells to return (default: 20)',
+          minimum: 1,
+          maximum: 100,
         },
       },
       required: ['class_name'],
@@ -603,69 +677,6 @@ const tools: Tool[] = [
     },
   },
 
-  // NEW: Enhanced Spell List tools
-  {
-    name: 'search_spell_lists',
-    description: 'Search available D&D 5E spell lists by class',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Search query for class names (optional)',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of results to return',
-          minimum: 1,
-          maximum: 20,
-        },
-      },
-    },
-  },
-  {
-    name: 'get_spell_list_details',
-    description: 'Get detailed spell list information for a specific D&D 5E class',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        class_name: {
-          type: 'string',
-          description: 'The name of the class to get spell list for (e.g., wizard, cleric, bard)',
-        },
-      },
-      required: ['class_name'],
-    },
-  },
-  {
-    name: 'get_all_spell_lists',
-    description: 'Get all available D&D 5E spell lists for quick reference',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-  },
-  {
-    name: 'get_spells_for_class',
-    description: 'Get detailed spell information for all spells available to a specific class',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        class_name: {
-          type: 'string',
-          description: 'The name of the class to get spells for (e.g., wizard, cleric, bard)',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of spells to return (default: 50)',
-          minimum: 1,
-          maximum: 100,
-        },
-      },
-      required: ['class_name'],
-    },
-  },
-
   // NEW: DM Encounter Builder tools
   {
     name: 'build_encounter',
@@ -952,6 +963,12 @@ const tools: Tool[] = [
   },
 ];
 
+for (const tool of tools) {
+  if (SCOPED_TOOLS.has(tool.name)) {
+    tool.inputSchema.properties = { ...tool.inputSchema.properties, ...SCOPE_PROPERTIES };
+  }
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
 });
@@ -961,6 +978,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     validateStringArgLengths(args, '');
+    const scope = parseScope(name, args);
 
     switch (name) {
       // Unified search across all content types
@@ -1001,15 +1019,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Enhanced spell tools
       case 'search_spells': {
-        const { query, level, school, limit, ordering } = args || {};
-        const options: any = {};
-        
-        if (level !== undefined) options.level = level;
-        if (school) options.school = school;
-        if (limit) options.limit = limit;
-        if (ordering) options.ordering = ordering;
+        const { query, school, ordering, class_name } = args || {};
+        const options: any = {
+          level: validateOptionalNumberInput(args?.level, 'level', 0, 9),
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 100),
+          scope
+        };
 
-        const results = await open5eClient.searchSpells(query as string, options);
+        if (school) options.school = validateStringInput(school, 'school');
+        if (ordering) options.ordering = validateStringInput(ordering, 'ordering');
+
+        const results = class_name
+          ? await open5eClient.getSpellsByClass(validateStringInput(class_name, 'class_name'), {
+            level: options.level, limit: options.limit, scope
+          })
+          : await open5eClient.searchSpells(optionalString(query, 'query'), options);
 
         return {
           content: [
@@ -1029,7 +1053,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_spell_details': {
         const spellName = validateStringInput(args?.spell_name, 'spell_name');
 
-        const spell = await open5eClient.getSpellDetails(spellName);
+        const spell = await open5eClient.getSpellDetails(spellName, scope);
         if (!spell) {
           return {
             content: [
@@ -1055,7 +1079,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Spell levels are 0 (cantrip) through 9; anything else is a client
         // error, not an empty result set.
         const level = validateNumberInput(args?.level, 'level', 0, 9);
-        const results = await open5eClient.getSpellsByLevel(level);
+        const results = await open5eClient.getSpellsByLevel(level, { scope });
 
         return {
           content: [
@@ -1076,16 +1100,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_spells_by_class': {
         const className = validateStringInput(args?.class_name, 'class_name');
 
-        const spells = await open5eClient.getSpellsByClass(className);
+        const result = await open5eClient.getSpellsByClass(className, {
+          level: validateOptionalNumberInput(args?.level, 'level', 0, 9),
+          maxLevel: validateOptionalNumberInput(args?.max_level, 'max_level', 0, 9),
+          limit: validateOptionalNumberInput(args?.limit, 'limit', 1, 100),
+          scope
+        });
 
         return {
           content: [
             {
               type: 'text',
               text: JSON.stringify({
-                class: className,
-                count: spells.length,
-                spells
+                class: result.class,
+                classKey: result.classKey,
+                found: result.count,
+                showing: result.results.length,
+                hasMore: result.hasMore,
+                spells: result.results
               }, null, 2),
             },
           ],
@@ -1137,7 +1169,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Enhanced race tools
       case 'search_races': {
         const query = args?.query as string;
-        const results = await open5eClient.searchRaces(query as string);
+        const results = await open5eClient.searchRaces(optionalString(query, 'query'), { scope });
         
         return {
           content: [
@@ -1157,7 +1189,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_race_details': {
         const raceName = validateStringInput(args?.race_name, 'race_name');
 
-        const race = await open5eClient.getRaceDetails(raceName);
+        const race = await open5eClient.getRaceDetails(raceName, scope);
         if (!race) {
           return {
             content: [
@@ -1236,13 +1268,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // NEW: Equipment tools
       case 'search_weapons': {
         const { query, is_martial, is_finesse, limit } = args || {};
-        const options: any = {};
+        const options: any = { scope };
         
         if (is_martial !== undefined) options.isMartial = is_martial;
         if (is_finesse !== undefined) options.isFinesse = is_finesse;
         if (limit) options.limit = limit;
 
-        const results = await open5eClient.searchWeapons(query as string, options);
+        const results = await open5eClient.searchWeapons(optionalString(query, 'query'), options);
 
         return {
           content: [
@@ -1361,14 +1393,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // NEW: Armor tools
       case 'search_armor': {
         const { query, category, ac_base, stealth_disadvantage, limit } = args || {};
-        const options: any = {};
+        const options: any = { scope };
         
         if (category) options.category = category;
         if (ac_base !== undefined) options.acBase = ac_base;
         if (stealth_disadvantage !== undefined) options.stealthDisadvantage = stealth_disadvantage;
         if (limit) options.limit = limit;
 
-        const results = await open5eClient.searchArmor(query as string, options);
+        const results = await open5eClient.searchArmor(optionalString(query, 'query'), options);
 
         return {
           content: [
@@ -1388,7 +1420,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_armor_details': {
         const armorName = validateStringInput(args?.armor_name, 'armor_name');
 
-        const armor = await open5eClient.getArmorDetails(armorName);
+        const armor = await open5eClient.getArmorDetails(armorName, scope);
         if (!armor) {
           return {
             content: [
@@ -1413,12 +1445,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // NEW: Feats tools
       case 'search_feats': {
         const { query, has_prerequisite, limit } = args || {};
-        const options: any = {};
+        const options: any = { scope };
         
         if (has_prerequisite !== undefined) options.hasPrerequisite = has_prerequisite;
         if (limit) options.limit = limit;
 
-        const results = await open5eClient.searchFeats(query as string, options);
+        const results = await open5eClient.searchFeats(optionalString(query, 'query'), options);
 
         return {
           content: [
@@ -1438,7 +1470,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_feat_details': {
         const featName = validateStringInput(args?.feat_name, 'feat_name');
 
-        const feat = await open5eClient.getFeatDetails(featName);
+        const feat = await open5eClient.getFeatDetails(featName, scope);
         if (!feat) {
           return {
             content: [
@@ -1467,7 +1499,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (limit) options.limit = limit;
 
-        const results = await open5eClient.searchConditions(query as string, options);
+        const results = await open5eClient.searchConditions(optionalString(query, 'query'), { ...options, scope });
 
         return {
           content: [
@@ -1487,7 +1519,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_condition_details': {
         const conditionName = validateStringInput(args?.condition_name, 'condition_name');
 
-        const condition = await open5eClient.getConditionDetails(conditionName);
+        const condition = await open5eClient.getConditionDetails(conditionName, scope);
         if (!condition) {
           return {
             content: [
@@ -1510,7 +1542,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'get_all_conditions': {
-        const conditions = await open5eClient.getAllConditions();
+        const conditions = await open5eClient.getAllConditions(scope);
 
         return {
           content: [
@@ -1532,7 +1564,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         if (limit) options.limit = limit;
 
-        const results = await open5eClient.searchBackgrounds(query as string, options);
+        const results = await open5eClient.searchBackgrounds(optionalString(query, 'query'), { ...options, scope });
 
         return {
           content: [
@@ -1552,7 +1584,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_background_details': {
         const backgroundName = validateStringInput(args?.background_name, 'background_name');
 
-        const background = await open5eClient.getBackgroundDetails(backgroundName);
+        const background = await open5eClient.getBackgroundDetails(backgroundName, scope);
         if (!background) {
           return {
             content: [
@@ -1633,98 +1665,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: JSON.stringify({
                 total: sections.length,
                 sections: sections
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      // NEW: Enhanced Spell List tools
-      case 'search_spell_lists': {
-        const { query, limit } = args || {};
-        const options: any = {};
-        
-        if (limit) options.limit = limit;
-
-        const results = await open5eClient.searchSpellLists(query as string, options);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                found: results.count,
-                showing: results.results.length,
-                hasMore: results.hasMore,
-                spellLists: results.results
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case 'get_spell_list_details': {
-        const className = validateStringInput(args?.class_name, 'class_name');
-
-        const spellList = await open5eClient.getSpellListDetails(className);
-        if (!spellList) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Spell list for class "${className}" not found`,
-              },
-            ],
-          };
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(spellList, null, 2),
-            },
-          ],
-        };
-      }
-
-      case 'get_all_spell_lists': {
-        const spellLists = await open5eClient.getAllSpellLists();
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                total: spellLists.length,
-                spellLists: spellLists
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      case 'get_spells_for_class': {
-        const className = args?.class_name as string;
-        const limit = args?.limit as number || 50;
-        
-        if (!className) {
-          throw new Error('class_name is required');
-        }
-
-        const spells = await open5eClient.getSpellsForClass(className);
-        
-        const limitedSpells = spells.slice(0, limit);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                class: className,
-                totalAvailable: spells.length,
-                showing: limitedSpells.length,
-                spells: limitedSpells
               }, null, 2),
             },
           ],
@@ -2110,7 +2050,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   'Complete conditions reference system',
                   'Character backgrounds with rich details and benefits',
                   'Rules sections for quick game rule lookups',
-                  'Class-specific spell lists with detailed spell information',
                   'Advanced search and filtering',
                   'Intelligent caching system'
                 ]
