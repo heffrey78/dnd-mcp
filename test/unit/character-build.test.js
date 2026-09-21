@@ -90,6 +90,22 @@ const species = [
     { name: 'Size', type: 'SIZE', desc: 'Small (about 2–3 feet tall)' },
     { name: 'Speed', type: 'SPEED', desc: '30 feet' },
     { name: 'Luck', desc: 'When you roll a 1 on the d20 of a D20 Test, you can reroll the die.' }
+  ] },
+  { key: 'srd_dwarf', name: 'Dwarf', document: srd, is_subspecies: false, traits: [
+    { name: 'Ability Score Increase', desc: 'Your Constitution score increases by 2.' },
+    { name: 'Size', desc: 'Your size is Medium.' },
+    { name: 'Speed', desc: 'Your base walking speed is 25 feet.' }
+  ] },
+  { key: 'srd_hill-dwarf', name: 'Hill Dwarf', document: srd, is_subspecies: true, subspecies_of: 'srd_dwarf', traits: [
+    { name: 'Ability Score Increase', desc: 'Your Wisdom score increases by 1.' },
+    { name: 'Dwarven Toughness',
+      desc: 'Your hit point maximum increases by 1, and it increases by 1 every time you gain a level.' }
+  ] },
+  { key: 'srd-2024_dwarf', name: 'Dwarf', document: srd24, is_subspecies: false, traits: [
+    { name: 'Size', type: 'SIZE', desc: 'Medium (about 4–5 feet tall)' },
+    { name: 'Speed', type: 'SPEED', desc: '30 feet' },
+    { name: 'Dwarven Toughness',
+      desc: 'Your Hit Point maximum increases by 1, and it increases by 1 again whenever you gain a level.' }
   ] }
 ];
 
@@ -202,6 +218,21 @@ describe('character builds', () => {
     assert.equal(build.spellcasting.saveDC, 8 + 3 + build.abilityScores.modifiers.charisma);
     assert.equal(build.spellcasting.cantripsKnown, 3);
     assert.equal(build.spellcasting.spellsKnownOrPrepared, 8);
+  });
+
+  test('Dwarven Toughness adds 1 hit point per level, in both SRD wordings', async () => {
+    const cases = [
+      { scope: SRD_2014, race: 'Hill Dwarf' },
+      { scope: {}, race: 'Dwarf' }
+    ];
+    for (const { scope, race } of cases) {
+      const build = await builder().build({ scope, preferredClass: 'fighter', preferredRace: 'dwarf', focusLevel: 5 });
+      mock.restore();
+      const con = build.abilityScores.modifiers.constitution;
+
+      assert.equal(build.race.name, race);
+      assert.equal(build.hitPoints.atLevel, 10 + 4 * 6 + 5 * (con + 1), `${race}: SRD Dwarven Toughness`);
+    }
   });
 
   test('spell suggestions stay within the class list and castable levels, one per level first', async () => {

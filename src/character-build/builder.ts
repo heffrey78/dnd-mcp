@@ -202,8 +202,11 @@ export class CharacterBuilder {
     // Constitution modifier every level -- retroactively, so the final one
     // (SRD 5.1 "Hit Points" / class "Hit Points at Higher Levels").
     const die = Number(/d(\d+)/i.exec(cls.hitDie)?.[1] ?? 0);
+    // +1 per level: Hill Dwarf "Dwarven Toughness" (SRD 5.1: "...increases by 1
+    // every time you gain a level") and Dwarf "Dwarven Toughness" (SRD 5.2:
+    // "...increases by 1 again whenever you gain a level").
     const perLevelBonus = [...race.detailedTraits, ...race.resolved.inheritedTraits]
-      .some(t => /hit point maximum increases by 1,? and it increases by 1 every time you gain a level/i.test(t.desc)) ? 1 : 0;
+      .some(t => /hit point maximum increases by 1,? and it increases by 1 (?:again )?(?:every time|whenever) you gain a level/i.test(t.desc)) ? 1 : 0;
     const hitPoints = die
       ? Math.max(level, die + (level - 1) * (die / 2 + 1) + level * (mods.constitution + perLevelBonus))
       : 0;
