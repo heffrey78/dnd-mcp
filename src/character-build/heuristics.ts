@@ -84,17 +84,35 @@ export const SPELL_ROLE_WEIGHTS: Readonly<Record<Playstyle, Record<SpellRole, nu
   balanced: { healing: 2.5, damage: 2, control: 2, buff: 2, utility: 1.5 }
 };
 
+/** "takes 3d8 damage", "1d8 fire damage", "force damage equal to 1d8". */
+const DICE_DAMAGE = /\d+d\d+[^.]*\bdamage\b|\bdamage equal to \d+d\d+/i;
+/** "you take", "you and any creature ... each take", "deals 6d6 damage to you". */
+const SELF_DAMAGE = /\byou (?:and [^.]*? )?(?:each )?take\b|\bdamage to you\b/i;
+
+function dealsDiceDamage(description: string): boolean {
+  const mainEffect = description.trim().split(/\n\s*\n/)[0];
+  return mainEffect.split(/(?<=\.)\s+/).some(s => DICE_DAMAGE.test(s) && !SELF_DAMAGE.test(s));
+}
+
 const CONDITIONS = /\b(charmed|frightened|restrained|paralyzed|incapacitated|stunned|prone|blinded|deafened|petrified|slowed)\b/i;
 
 /** The roles a spell plays, from its structured fields and description. */
 export function spellRoles(spell: {
-  description: string; damageRoll?: string; attackRoll?: boolean; savingThrow?: string; ritual: boolean;
+  description: string; damageRoll?: string; damageTypes: string[]; attackRoll?: boolean; savingThrow?: string;
+  ritual: boolean;
 }): SpellRole[] {
   const text = spell.description;
   const roles: SpellRole[] = [];
-  // Structured fields only: descriptions mention damage in passing (Meld into
-  // Stone deals damage if the stone is destroyed).
-  if (spell.damageRoll || spell.attackRoll) roles.push('damage');
+  // Open5e's damage fields cannot be trusted alone. 2024 rows put healing and
+  // bonus dice in damage_roll (Cure Wounds 2d8, Bless 1d4) and set attack_roll
+  // on spells that only mention attacks (Bless, Invisibility); most 2014 rows
+  // leave them empty (Magic Missile, Sacred Flame). So a roll counts only with
+  // a damage type, and otherwise the main effect (the first paragraph) must
+  // deal dice of damage to someone other than the caster: Meld into Stone and
+  // Contact Other Plane hurt you, and Chromatic Orb's type is chosen on casting.
+  if (((spell.damageRoll || spell.attackRoll) && spell.damageTypes.length > 0) || dealsDiceDamage(text)) {
+    roles.push('damage');
+  }
   // "can't regain hit points" (Chill Touch) is the opposite of healing.
   if (/(?<!can't |cannot |can’t )regains? (?:a number of )?hit points|(?<!can't |cannot |can’t )regain \d+d\d+/i.test(text)) {
     roles.push('healing');

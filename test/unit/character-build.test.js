@@ -150,6 +150,7 @@ describe('character builds', () => {
     assert.deepEqual(build.race.sizeCategories, ['Small']);
     assert.equal(build.race.walkingSpeed, 25);
     assert.ok(build.race.traits.includes('Lucky'), 'the parent species\' traits come with it');
+    assert.ok(build.weaknesses.some(w => /^Small: disadvantage .*Heavy/.test(w)), 'SRD 5.1 Heavy property');
   });
 
   test('ability scores follow the standard array, species increases and ASIs', async () => {

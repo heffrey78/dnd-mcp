@@ -285,7 +285,7 @@ export class CharacterBuilder {
       suggestedFeats: feats,
       startingEquipment: { class: cls.equipment, background: background.equipment || undefined },
       strengths: this.strengths(cls, race, atFirstLevel, keyAbilities),
-      weaknesses: this.weaknesses(cls, race, mods),
+      weaknesses: this.weaknesses(cls, race, mods, atLevel, ruleset),
       buildStrategy: `${EXPERIENCE_TIPS[experienceLevel]} As a ${cls.name}, lead with ` +
         `${keyAbilities.join(' and ')}` +
         (classFeatures.length > 0 ? `; your signature features by level ${level} are ` +
@@ -478,21 +478,50 @@ export class CharacterBuilder {
     return [...new Set(strengths)];
   }
 
-  private weaknesses(cls: EnhancedClassData, race: EnhancedRaceData, mods: AbilityScores): string[] {
+  private weaknesses(
+    cls: EnhancedClassData, race: EnhancedRaceData, mods: AbilityScores, scores: AbilityScores, ruleset: Ruleset
+  ): string[] {
     const weaknesses: string[] = [];
     const die = Number(/d(\d+)/i.exec(cls.hitDie)?.[1] ?? 0);
     if (die > 0 && die <= 6) weaknesses.push(`d${die} hit die: few hit points`);
     if (!cls.proficiencies.armor || /^none$/i.test(cls.proficiencies.armor)) weaknesses.push('No armor proficiency');
     if (mods.constitution <= 0) weaknesses.push('Low Constitution');
-    if (race.resolved.sizeCategories.length === 1 && race.resolved.sizeCategories[0] === 'Small') {
-      // SRD 5.1 "Weapon Properties: Heavy".
-      weaknesses.push('Small: disadvantage on attack rolls with Heavy weapons');
-    }
+    weaknesses.push(...heavyWeaponWeaknesses(ruleset, race.resolved.sizeCategories, scores,
+      usesHeavyWeapons(cls.proficiencies.weapons)));
     for (const trait of [...race.detailedTraits, ...race.resolved.inheritedTraits]) {
       if (/sunlight sensitivity/i.test(trait.name)) weaknesses.push('Sunlight Sensitivity');
     }
     return [...new Set(weaknesses)];
   }
+}
+
+/**
+ * Whether a class is trained with Heavy weapons: every Heavy weapon is
+ * Martial, and none is Finesse or Light, so "Martial weapons that have the
+ * Finesse or Light property" (the 2024 Rogue and Monk) does not count.
+ */
+export function usesHeavyWeapons(weapons: string | undefined): boolean {
+  return /martial weapons(?! that have)/i.test(weapons ?? '');
+}
+
+/**
+ * When Heavy weapons impose disadvantage. SRD 5.1 "Weapon Properties: Heavy":
+ * Small creatures. SRD 5.2 "Weapon Properties: Heavy": a melee weapon below
+ * Strength 13, a ranged one below Dexterity 13, whatever your size; only worth
+ * saying for classes proficient with Martial weapons, since every Heavy weapon
+ * is Martial.
+ */
+export function heavyWeaponWeaknesses(
+  ruleset: Ruleset, sizes: string[], scores: Pick<AbilityScores, 'strength' | 'dexterity'>, martial: boolean
+): string[] {
+  if (ruleset === '5e-2024') {
+    if (!martial) return [];
+    return [
+      ...(scores.strength < 13 ? ['Strength below 13: disadvantage on attack rolls with Heavy melee weapons'] : []),
+      ...(scores.dexterity < 13 ? ['Dexterity below 13: disadvantage on attack rolls with Heavy ranged weapons'] : [])
+    ];
+  }
+  return sizes.length === 1 && sizes[0] === 'Small' ? ['Small: disadvantage on attack rolls with Heavy weapons'] : [];
 }
 
 function oneOf<T extends string>(value: string, allowed: readonly T[], field: string): T {

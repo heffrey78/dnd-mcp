@@ -9,6 +9,7 @@ import {
 } from '../../dist/character-build/abilities.js';
 import { checkPrerequisite } from '../../dist/character-build/prerequisites.js';
 import { spellRoles, roleFit } from '../../dist/character-build/heuristics.js';
+import { heavyWeaponWeaknesses, usesHeavyWeapons } from '../../dist/character-build/builder.js';
 
 const tens = { strength: 10, dexterity: 10, constitution: 10, intelligence: 10, wisdom: 10, charisma: 10 };
 
@@ -100,11 +101,42 @@ describe('feat prerequisites', () => {
 });
 
 describe('spell roles', () => {
-  const spell = (description, extra = {}) => ({ description, ritual: false, ...extra });
+  const spell = (description, extra = {}) => ({ description, damageTypes: [], ritual: false, ...extra });
 
   test('damage comes from the structured fields, not passing mentions', () => {
-    assert.deepEqual(spellRoles(spell('A streak of fire.', { damageRoll: '8d6' })), ['damage']);
-    assert.ok(!spellRoles(spell('If the stone is destroyed you take 6d6 bludgeoning damage.')).includes('damage'));
+    assert.deepEqual(spellRoles(spell('A streak of fire.', { damageRoll: '8d6', damageTypes: ['fire'] })), ['damage']);
+    assert.ok(!spellRoles(spell('Its destruction expels you and deals 6d6 bludgeoning damage to you.')).includes('damage'));
+    assert.ok(!spellRoles(spell('On a failure, you take 6d6 psychic damage and are insane.')).includes('damage'));
+    assert.ok(!spellRoles(spell('You teleport.\n\nIf you arrive in an occupied space, the creature takes 4d6 force damage.'))
+      .includes('damage'), 'only the first paragraph, the main effect, counts');
+  });
+
+  test('2014 rows with empty damage fields: dice of damage in the main effect', () => {
+    assert.ok(spellRoles(spell('You create three glowing darts. Each dart deals 1d4 + 1 force damage to its target.'))
+      .includes('damage'));
+    assert.ok(spellRoles(spell('A creature you can see must succeed on a Wisdom saving throw or take 1d4 psychic damage.'))
+      .includes('damage'));
+  });
+
+  // Shapes of real srd-2024 rows: dice in damage_roll and attack_roll set on
+  // spells that deal no damage, and no damage types when the caster picks one.
+  test('2024 healing and bonus dice are not damage', () => {
+    const cure = spellRoles(spell('A creature you touch regains a number of Hit Points equal to 2d8 plus your ' +
+      'spellcasting ability modifier.', { damageRoll: '2d8' }));
+    assert.deepEqual(cure, ['healing']);
+    const bless = spellRoles(spell('Whenever a target makes an attack roll or a saving throw before the spell ends, ' +
+      'the target adds 1d4 to the attack roll or save.', { damageRoll: '1d4', attackRoll: true }));
+    assert.ok(!bless.includes('damage'));
+    const invisibility = spellRoles(spell('The spell ends early immediately after the target makes an attack roll, ' +
+      'deals damage, or casts a spell.', { attackRoll: true }));
+    assert.ok(!invisibility.includes('damage'));
+  });
+
+  test('damage of a type chosen when cast is still damage', () => {
+    assert.ok(spellRoles(spell('Make a ranged spell attack. On a hit, the target takes 3d8 damage of the type you chose.',
+      { damageRoll: '3d8', attackRoll: true })).includes('damage'));
+    assert.ok(spellRoles(spell('On a hit, the target takes force damage equal to 1d8 plus your spellcasting ability ' +
+      'modifier.', { attackRoll: true })).includes('damage'));
   });
 
   test('healing, but not "can\'t regain hit points"', () => {
@@ -129,5 +161,34 @@ describe('spell roles', () => {
   test('role fit covers only SRD classes', () => {
     assert.equal(roleFit('Bard', 'support'), 5);
     assert.equal(roleFit('Marshal', 'support'), null);
+  });
+});
+
+describe('Heavy weapons', () => {
+  const small = ['Small'];
+
+  test('SRD 5.1: Small creatures have disadvantage, whatever their scores', () => {
+    assert.equal(heavyWeaponWeaknesses('5e-2014', small, { strength: 18, dexterity: 18 }, true).length, 1);
+    assert.deepEqual(heavyWeaponWeaknesses('5e-2014', ['Medium'], { strength: 8, dexterity: 8 }, true), []);
+  });
+
+  test('SRD 5.2: Strength 13 for melee and Dexterity 13 for ranged, whatever the size', () => {
+    assert.deepEqual(heavyWeaponWeaknesses('5e-2024', small, { strength: 13, dexterity: 13 }, true), []);
+    const weak = heavyWeaponWeaknesses('5e-2024', ['Medium'], { strength: 12, dexterity: 12 }, true);
+    assert.equal(weak.length, 2);
+    assert.match(weak[0], /Strength below 13.*melee/);
+    assert.match(weak[1], /Dexterity below 13.*ranged/);
+  });
+
+  test('only classes trained with unrestricted Martial weapons use Heavy ones', () => {
+    assert.equal(usesHeavyWeapons('Simple and Martial weapons'), true);
+    assert.equal(usesHeavyWeapons('Simple weapons, martial weapons'), true);
+    assert.equal(usesHeavyWeapons('Simple weapons and Martial weapons that have the Finesse or Light property'), false);
+    assert.equal(usesHeavyWeapons('Simple weapons, hand crossbows, longswords, rapiers, shortswords'), false);
+    assert.equal(usesHeavyWeapons(undefined), false);
+  });
+
+  test('SRD 5.2: not mentioned for classes without Martial weapons', () => {
+    assert.deepEqual(heavyWeaponWeaknesses('5e-2024', small, { strength: 8, dexterity: 8 }, false), []);
   });
 });
