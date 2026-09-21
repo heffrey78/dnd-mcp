@@ -57,6 +57,28 @@ function validateOptionalNumberInput(value: any, fieldName: string, min: number 
   return value;
 }
 
+/** Longest string any tool argument may carry. */
+const MAX_STRING_ARG_LENGTH = 100;
+
+/**
+ * Rejects any string argument, however deeply nested, that is longer than
+ * MAX_STRING_ARG_LENGTH. Checked once for every tool so no handler can forget
+ * it; the HTTP client deliberately does not truncate on our behalf.
+ */
+function validateStringArgLengths(value: unknown, path: string): void {
+  if (typeof value === 'string') {
+    if (value.trim().length > MAX_STRING_ARG_LENGTH) {
+      throw new Error(`${path} is too long (maximum ${MAX_STRING_ARG_LENGTH} characters)`);
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((item, i) => validateStringArgLengths(item, `${path}[${i}]`));
+  } else if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      validateStringArgLengths(item, path ? `${path}.${key}` : key);
+    }
+  }
+}
+
 const open5eClient = new Open5eClient();
 const unifiedSearchEngine = new UnifiedSearchEngine();
 
@@ -938,6 +960,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    validateStringArgLengths(args, '');
+
     switch (name) {
       // Unified search across all content types
       case 'unified_search': {

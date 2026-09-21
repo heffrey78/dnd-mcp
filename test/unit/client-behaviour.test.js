@@ -98,12 +98,20 @@ describe('parameter sanitisation', () => {
     assert.equal(mock.paramsOf().name__icontains, 'fireball');
   });
 
-  test('an over-long query is truncated rather than sent whole', async () => {
+  test('an over-long query is rejected rather than truncated into a different filter', async () => {
+    mock = installMockFetch(() => page([]));
+    const client = new Open5eClient();
+
+    await assert.rejects(() => client.searchSpells('a'.repeat(1001)), /name__icontains.*longer than 1000/);
+    assert.equal(mock.calls.length, 0);
+  });
+
+  test('a long query within the limit is sent whole', async () => {
     mock = installMockFetch(() => page([]));
     const client = new Open5eClient();
 
     await client.searchSpells('a'.repeat(300));
-    assert.equal(mock.paramsOf().name__icontains.length, 100);
+    assert.equal(mock.paramsOf().name__icontains.length, 300);
   });
 
   test('a whitespace-only query sends no filter', async () => {
@@ -284,5 +292,68 @@ describe('species lookup', () => {
     const client = new Open5eClient();
 
     assert.equal(await client.getRaceDetails('tabaxi'), null);
+  });
+
+  const lightfoot = {
+    name: 'Lightfoot', key: 'srd_lightfoot', document: { key: 'srd-2014' },
+    is_subspecies: true, subspecies_of: 'srd_halfling', traits: []
+  };
+
+  // Answers name searches with halflingRows and subspecies lookups with the
+  // subspecies of the requested parents.
+  function speciesResponder(url) {
+    const parents = url.searchParams.get('subspecies_of__key__in');
+    if (parents === null) return page(halflingRows);
+    const keys = parents.split(',');
+    return page([...halflingRows, lightfoot]
+      .filter(row => row.is_subspecies && keys.includes(row.subspecies_of)));
+  }
+
+  test('a search includes subspecies whose names omit the parent', async () => {
+    mock = installMockFetch(speciesResponder);
+    const client = new Open5eClient();
+
+    const { results, count } = await client.searchRaces('halfling');
+    const names = results.map(race => race.name);
+
+    assert.ok(names.includes('Lightfoot'), `Lightfoot missing from ${names}`);
+    assert.equal(names.filter(name => name === 'Stoor Halfling').length, 1,
+      'a subspecies that also matched by name is not duplicated');
+    assert.equal(count, halflingRows.length + 1);
+  });
+
+  test('subspecies are fetched with subspecies_of__key__in, not the ignored subspecies_of', async () => {
+    mock = installMockFetch(speciesResponder);
+    const client = new Open5eClient();
+
+    await client.searchRaces('halfling');
+
+    const params = mock.paramsOf(1);
+    assert.equal(params.subspecies_of, undefined);
+    assert.deepEqual(params.subspecies_of__key__in.split(',').sort(),
+      ['srd-2024_halfling', 'srd_halfling']);
+  });
+
+  test('no subspecies request is made when only subspecies matched', async () => {
+    mock = installMockFetch(() => page([halflingRows[0]]));
+    const client = new Open5eClient();
+
+    await client.searchRaces('stoor');
+    assert.equal(mock.calls.length, 1);
+  });
+
+  test('many parent keys go out whole in a single subspecies request', async () => {
+    const parents = Array.from({ length: 12 }, (_, i) => ({
+      name: `Elf ${i}`, key: `some-long-document-key_elf-${i}`, is_subspecies: false, traits: []
+    }));
+    mock = installMockFetch(url =>
+      url.searchParams.has('subspecies_of__key__in') ? page([]) : page(parents));
+    const client = new Open5eClient();
+
+    await client.searchRaces('elf');
+
+    assert.equal(mock.calls.length, 2);
+    assert.deepEqual(mock.paramsOf(1).subspecies_of__key__in.split(','),
+      parents.map(p => p.key));
   });
 });

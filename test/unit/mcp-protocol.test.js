@@ -66,6 +66,20 @@ describe('MCP stdio protocol', () => {
     }
   });
 
+  test('an over-long string argument is rejected before any lookup', async () => {
+    const response = await server.callTool('search_races', { query: 'a'.repeat(101) });
+    assert.equal(response.result?.isError, true);
+    assert.match(response.result.content[0].text, /query is too long \(maximum 100/);
+  });
+
+  test('the length check reaches strings nested in arrays and objects', async () => {
+    const response = await server.callTool('compare_character_builds', {
+      build_options: [{ preferred_class: 'a'.repeat(101) }]
+    });
+    assert.equal(response.result?.isError, true);
+    assert.match(response.result.content[0].text, /build_options\[0\]\.preferred_class is too long/);
+  });
+
   test('an unknown tool returns an error instead of crashing the server', async () => {
     const response = await server.callTool('no_such_tool', {});
     const failed = Boolean(response.error) || Boolean(response.result?.isError);

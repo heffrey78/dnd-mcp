@@ -31,6 +31,11 @@ Notes:
 - **`/v2/races/` no longer exists** -- it is now `/v2/species/`, and the fields
   `is_subrace` / `subrace_of` were renamed to `is_subspecies` / `subspecies_of`.
   Species rows carry `key` rather than a `url`.
+- **Subspecies by parent: use `subspecies_of__key__in`.** A bare
+  `subspecies_of=srd_halfling` is ignored and returns every species;
+  `subspecies_of__key` and `subspecies_of__key__in` (comma-separated) filter
+  correctly and return nothing for an unknown key. `searchRaces` uses this to
+  include subspecies such as *Lightfoot* whose names omit the parent.
 - The three local-filter collections are small (25 armor, 75 weapons, 21
   conditions), so fetching them whole is cheap.
 - Results contain **duplicates across sourcebooks** -- two "Fireball" rows, two

@@ -298,6 +298,8 @@ export class Open5eClient {
   private cache: NodeCache;
   private readonly cacheMaxAge = 30 * 60; // 30 minutes in seconds
   private readonly baseURL = 'https://api.open5e.com';
+  /** Longest query-parameter value the client will send; longer ones throw. */
+  private static readonly MAX_PARAM_LENGTH = 1000;
 
   constructor() {
     this.cache = new NodeCache({ 
@@ -431,12 +433,30 @@ export class Open5eClient {
       // dropped: a silently discarded filter turns a bad query into an
       // unfiltered one, which returns the whole collection as if it matched.
       if (typeof value === 'string') {
-        // Prevent injection attacks and validate length
-        const sanitizedValue = value.trim().substring(0, 100);
+        // Length limits on user input are enforced at the MCP boundary. This is
+        // only a guard against building an unreasonable URL, and it throws
+        // rather than truncates: a shortened value is a different filter.
+        const sanitizedValue = value.trim();
+        if (sanitizedValue.length > Open5eClient.MAX_PARAM_LENGTH) {
+          throw new Error(`Invalid value for ${key}: longer than ${Open5eClient.MAX_PARAM_LENGTH} characters`);
+        }
         if (sanitizedValue.length > 0) {
           sanitized[key] = sanitizedValue;
         }
         // An all-whitespace value means "no filter", which is a valid request.
+      } else if (Array.isArray(value)) {
+        // Multi-value filters (`__in`) are sent comma-separated. An empty list
+        // would be dropped by Open5e and match everything, so reject it.
+        const items = value.map(item => typeof item === 'string' ? item.trim() : item);
+        if (items.length === 0 ||
+            items.some(item => typeof item !== 'string' || item.length === 0 || item.includes(','))) {
+          throw new Error(`Invalid value for ${key}: expected a non-empty list of strings without commas`);
+        }
+        const joined = items.join(',');
+        if (joined.length > Open5eClient.MAX_PARAM_LENGTH) {
+          throw new Error(`Invalid value for ${key}: longer than ${Open5eClient.MAX_PARAM_LENGTH} characters`);
+        }
+        sanitized[key] = joined;
       } else if (typeof value === 'number') {
         if (!isFinite(value) || value < 0 || value > 1000) {
           throw new Error(`Invalid value for ${key}: must be a number between 0 and 1000`);
@@ -445,7 +465,7 @@ export class Open5eClient {
       } else if (typeof value === 'boolean') {
         sanitized[key] = value;
       } else {
-        throw new Error(`Invalid value for ${key}: expected a string, number or boolean`);
+        throw new Error(`Invalid value for ${key}: expected a string, string list, number or boolean`);
       }
     });
 
@@ -680,12 +700,38 @@ export class Open5eClient {
     params.limit = limit; // Kept small by default to avoid timeouts
 
     const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', params);
+    const rows = response.results;
+
+    // Subspecies names often omit the parent ("Lightfoot" for Halfling), so a
+    // name match alone misses them. Pull in the subspecies of every matched
+    // parent species.
+    const parentKeys = query
+      ? rows.filter(race => !race.is_subspecies && race.key).map(race => race.key as string)
+      : [];
+    const subspecies = await this.fetchSubspecies(parentKeys);
+    const seen = new Set(rows.map(race => race.key));
+    const added = subspecies.filter(race => !seen.has(race.key));
 
     return {
-      count: response.count,
-      results: response.results.map(race => this.transformRace(race)),
+      count: response.count + added.length,
+      results: [...rows, ...added].map(race => this.transformRace(race)),
       hasMore: !!response.next
     };
+  }
+
+  /**
+   * Species whose parent is one of `parentKeys`. The filter must be
+   * `subspecies_of__key__in`: a bare `subspecies_of` is silently ignored and
+   * returns every species.
+   */
+  private async fetchSubspecies(parentKeys: string[]): Promise<any[]> {
+    if (parentKeys.length === 0) return [];
+
+    const response = await this.makeRequest<Open5eResponse<any>>('/v2/species/', {
+      subspecies_of__key__in: parentKeys,
+      limit: 50
+    });
+    return response.results;
   }
 
   private transformRace(race: any): EnhancedRaceData {
