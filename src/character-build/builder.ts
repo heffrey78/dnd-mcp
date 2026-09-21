@@ -12,6 +12,7 @@ import {
 import type {
   BackgroundData, EnhancedClassData, EnhancedRaceData, EnhancedSpellData, FeatData, Open5eClient
 } from '../open5e-client.js';
+import type { AbilityIncreases } from '../species.js';
 import { type ContentScope, type SourceLabel, compareRanks, pickByName, sourceRank } from '../sources.js';
 import {
   abilityModifier, applyIncreases, assignStandardArray, backgroundIncreases, increaseFit,
@@ -19,9 +20,10 @@ import {
 } from './abilities.js';
 import {
   ABILITY_FILL_ORDER, EITHER_ABILITY_BY_PLAYSTYLE, EXPERIENCE_TIPS, FEAT_KEYWORDS, PLAYSTYLE_DESCRIPTIONS,
-  PLAYSTYLE_NAMES, SPECIES_FIT_WEIGHT, SPELL_ROLE_WEIGHTS, STAPLE_SPELLS, STAPLE_SPELL_BONUS,
+  ORIGIN_FEAT_PREFERENCE, PLAYSTYLE_NAMES, SPECIES_FIT_WEIGHT, SPELL_ROLE_WEIGHTS, STAPLE_SPELLS, STAPLE_SPELL_BONUS,
   campaignFit, roleFit, spellRoles
 } from './heuristics.js';
+import { type BuildRuleset, LEGACY_BACKGROUND_ABILITIES, isLegacy, speciesIncreasesFor } from './legacy.js';
 import { checkPrerequisite } from './prerequisites.js';
 import {
   CAMPAIGN_TYPES, EXPERIENCE_LEVELS, PLAYSTYLES,
@@ -35,7 +37,12 @@ import {
  */
 export const DEFAULT_BUILD_SCOPE: ContentScope = { sources: ['srd-2024'] };
 
-type Ruleset = '5e-2014' | '5e-2024';
+type Ruleset = BuildRuleset;
+
+/** The rules a class is built under: 2024 for 2024 classes, else 2014 (A5e classes included). */
+function rulesetOf(ruleset: string | null | undefined): Ruleset {
+  return ruleset === '5e-2024' ? '5e-2024' : '5e-2014';
+}
 
 /** "resistance to poison", "resistance to acid and fire" -- named damage types only. */
 const DAMAGE_RESISTANCE = /resistance to (?:\w+ (?:and|or) )?(acid|cold|fire|force|lightning|necrotic|poison|psychic|radiant|thunder|bludgeoning|piercing|slashing)\b/gi;
@@ -97,9 +104,10 @@ export class CharacterBuilder {
 
     const pairs = classCandidates.flatMap(candidate => {
       const candidateRules = classRulesFor(candidate.name);
+      const candidateRuleset = rulesetOf(candidate.source.ruleset);
       return speciesCandidates.map(species => {
-        const keys = this.keyAbilities(candidate, candidateRules, playstyle, preferredAbilities, species);
-        const increases = species.resolved.abilityScoreIncreases;
+        const increases = speciesIncreasesFor(species.resolved.abilityScoreIncreases, species.source.ruleset, candidateRuleset);
+        const keys = this.keyAbilities(candidate, candidateRules, playstyle, preferredAbilities, increases);
         const score = (roleFit(candidate.name, playstyle) ?? -1) + campaignFit(candidate.name, campaignType) +
           SPECIES_FIT_WEIGHT * increaseFit(increases, keys) +
           preferredAbilities.reduce((sum, a) => sum + (increases.fixed[a] ?? 0), 0);
@@ -119,12 +127,20 @@ export class CharacterBuilder {
     const cls = await this.client.getClassDetails(chosenClass.key, scope);
     if (!cls) throw new Error(`Class ${chosenClass.key} could not be loaded`);
 
-    const ruleset: Ruleset = cls.source.ruleset === '5e-2024' ? '5e-2024' : '5e-2014';
+    const ruleset = rulesetOf(cls.source.ruleset);
     const rules = classRulesFor(cls.name);
     if (!rules) warnings.push(`${cls.name} is not an SRD class: key abilities and spell slots are not known`);
     warnings.push(...race.resolved.unresolved.map(reason => `${race.name}: ${reason}`));
 
-    const keyAbilities = this.keyAbilities(cls, rules, playstyle, preferredAbilities, race);
+    const speciesIncreases = speciesIncreasesFor(race.resolved.abilityScoreIncreases, race.source.ruleset, ruleset);
+    if (isLegacy(race.source.ruleset, ruleset)) {
+      notes.push(`${race.name} is a 2014 species in a 2024 build: it keeps its traits, but its ability score ` +
+        'increases come from the background instead (2024 Player\'s Handbook).');
+    } else if (ruleset === '5e-2014' && race.source.ruleset === '5e-2024') {
+      warnings.push(`${race.name} is a 2024 species in a 2014 build: 2024 species have no ability score ` +
+        'increases, which the 2014 rules expect from the species');
+    }
+    const keyAbilities = this.keyAbilities(cls, rules, playstyle, preferredAbilities, speciesIncreases);
     const priority = priorityOrder(keyAbilities, preferredAbilities, ABILITY_FILL_ORDER[playstyle]);
 
     // Background
@@ -133,7 +149,7 @@ export class CharacterBuilder {
       ? await this.preferred(backgrounds, options.preferredBackground, 'Background', scope,
         name => this.client.getBackgroundDetails(name))
       : best(backgrounds, bg => {
-        const listed = backgroundAbilities(bg);
+        const listed = backgroundAbilities(bg, ruleset);
         const theme = campaignType !== 'mixed' && BACKGROUND_THEMES[campaignType].test(bg.name) ? 1 : 0;
         return increaseFit(backgroundIncreases(listed, keyAbilities), keyAbilities) + theme;
       }, bg => bg);
@@ -143,8 +159,12 @@ export class CharacterBuilder {
     const base = assignStandardArray(priority);
     const steps: string[] = [];
     let atFirstLevel = base;
-    const speciesIncreases = race.resolved.abilityScoreIncreases;
-    const listed = backgroundAbilities(background);
+    const listed = backgroundAbilities(background, ruleset);
+    const legacyBackground = isLegacy(background.source.ruleset, ruleset);
+    if (legacyBackground) {
+      notes.push(`${background.name} is a 2014 background in a 2024 build: it raises one ability by 2 and ` +
+        'another by 1, and grants an Origin feat (2024 Player\'s Handbook).');
+    }
     if (Object.keys(speciesIncreases.fixed).length > 0 || speciesIncreases.choices.length > 0) {
       const applied = applyIncreases(atFirstLevel, speciesIncreases, priority, race.name);
       atFirstLevel = applied.scores;
@@ -197,7 +217,9 @@ export class CharacterBuilder {
     const feats = level >= Math.min(4, ...improvementLevels.concat(99))
       ? await this.suggestFeats({ level, scores: atLevel, canCastSpells, features: featureNames }, playstyle, keyAbilities, scope)
       : [];
-    const originFeat = background.benefits.find(b => b.type === 'feat')?.desc;
+    const originFeat = legacyBackground
+      ? await this.originFeatFor(playstyle, scope, warnings)
+      : background.benefits.find(b => b.type === 'feat')?.desc;
 
     // Level-by-level plan
     const levelProgression = [];
@@ -245,7 +267,7 @@ export class CharacterBuilder {
         source: race.source,
         sizeCategories: race.resolved.sizeCategories,
         walkingSpeed: race.resolved.walkingSpeed,
-        abilityScoreIncreases: race.resolved.abilityScoreIncreases,
+        abilityScoreIncreases: speciesIncreases,
         traits: [...race.resolved.inheritedTraits.map(t => t.name), ...race.traits]
           .filter(name => !/^(ability score increase|size|speed|age|alignment)$/i.test(name))
       },
@@ -309,7 +331,7 @@ export class CharacterBuilder {
     rules: ReturnType<typeof classRulesFor>,
     playstyle: Playstyle,
     preferred: Ability[],
-    race?: EnhancedRaceData
+    speciesIncreases?: AbilityIncreases
   ): Ability[] {
     if (!rules) return cls.primaryAbility.filter((a): a is Ability => (ABILITIES as readonly string[]).includes(a));
     if ('allOf' in rules.keyAbilities) return rules.keyAbilities.allOf;
@@ -317,7 +339,7 @@ export class CharacterBuilder {
     const options = rules.keyAbilities.anyOf;
     const fromPreference = options.find(a => preferred.includes(a));
     if (fromPreference) return [fromPreference];
-    const boost = (a: Ability) => race?.resolved.abilityScoreIncreases.fixed[a] ?? 0;
+    const boost = (a: Ability) => speciesIncreases?.fixed[a] ?? 0;
     const bySpecies = [...options].sort((a, b) => boost(b) - boost(a));
     if (boost(bySpecies[0]) > boost(bySpecies[1] ?? bySpecies[0])) return [bySpecies[0]];
     const lean = EITHER_ABILITY_BY_PLAYSTYLE[playstyle];
@@ -427,6 +449,20 @@ export class CharacterBuilder {
       spellsKnownOrPrepared: spellsKnown,
       suggested: [...cantrips, ...leveled].map(toSuggestion).sort((a, b) => a.level - b.level || a.name.localeCompare(b.name))
     };
+  }
+
+  /** The Origin feat a 2014 background grants in a 2024 build (ORIGIN_FEAT_PREFERENCE). */
+  private async originFeatFor(playstyle: Playstyle, scope: ContentScope, warnings: string[]): Promise<string | undefined> {
+    const { results } = await this.client.searchFeats('', { limit: 100, scope });
+    const origin = results.filter(feat => /^origin$/i.test(feat.type));
+    const preference = ORIGIN_FEAT_PREFERENCE[playstyle].map(name => name.toLowerCase());
+    const rank = (feat: FeatData) => {
+      const i = preference.indexOf(feat.name.toLowerCase());
+      return i === -1 ? preference.length : i;
+    };
+    const chosen = origin.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))[0];
+    if (!chosen) warnings.push('No Origin feat is in the chosen sources for the 2014 background to grant');
+    return chosen?.name;
   }
 
   private async suggestFeats(
@@ -544,8 +580,13 @@ function best<T extends { name: string; source: SourceLabel }, R>(rows: T[], sco
   return ranked[0] ? pick(ranked[0].row) : null;
 }
 
-/** The abilities a 2024 background lets you raise: "Intelligence, Wisdom, Charisma". */
-function backgroundAbilities(background: BackgroundData): Ability[] {
+/**
+ * The abilities a background lets you raise: the three a 2024 background
+ * lists ("Intelligence, Wisdom, Charisma"), any for a 2014 background in a
+ * 2024 build, and none for a 2014 background in a 2014 build.
+ */
+function backgroundAbilities(background: BackgroundData, ruleset: Ruleset): Ability[] {
+  if (isLegacy(background.source.ruleset, ruleset)) return [...LEGACY_BACKGROUND_ABILITIES];
   const text = background.benefits.find(b => b.type === 'ability_score')?.desc ?? '';
   return ABILITIES.filter(a => new RegExp(`\\b${a}\\b`, 'i').test(text));
 }

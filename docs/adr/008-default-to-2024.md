@@ -43,24 +43,34 @@ Open5e's variety.
 4. **Rules are chosen by the row's ruleset**, not by the default: a 2014 class
    still gets 2014 spell slots, ASI levels and the Small-creature Heavy rule.
 
-## Open question: mixing editions
+5. **2014 options in a 2024 build follow the 2024 Player's Handbook**
+   (chapter 2, on backgrounds and species from older books;
+   `src/character-build/legacy.ts`). A build's rules come from its class.
+   In a 2024 build:
+   - a 2014 species keeps its traits (speed, size, Lucky…) but not its
+     ability score increases, which come from the background instead;
+   - a 2014 background raises any one ability by 2 and another by 1, and
+     grants an Origin feat from the scope, chosen by
+     `ORIGIN_FEAT_PREFERENCE` in `heuristics.ts`;
+   - 2014 feats are General feats, never Origin feats.
 
-The 2024 Player's Handbook (p. 38) lets older options into 2024 games:
+   Each conversion is stated in the build's `notes`. The rule is not in
+   SRD 5.2, so it is cited to the PHB. The PHB page for backgrounds (p. 38)
+   comes from a secondary source, not a copy of the book.
 
-- a 2014 species loses its ability score increases, which come from the
-  background instead;
-- a 2014 background gives +2/+1 (or +1/+1/+1) and an origin feat;
-- 2014 subclasses start at level 3, gaining the earlier features then;
-- 2014 feats are general feats, not origin feats.
-
-This is how most tables use older content, but it is not in SRD 5.2, so it
-would be a design choice cited to the PHB rather than an SRD rule. Until it
-is decided, a build scope that mixes editions uses each row's own rules.
+   Subclasses are not converted: Open5e ties each subclass to its own
+   class's document, so a 2024 class only ever gets 2024 subclasses. The
+   reverse (a 2024 species in a 2014 build) has no rule; it gets no species
+   increases and a warning.
 
 ## Consequences
 
 - Default builds get a real background, origin feat and background ability
   increases.
+- Mixed scopes such as `["srd-2024", "open5e"]` bring Open5e's 2014 species
+  (Stoor Halfling, Darakhul…) and backgrounds into 2024 builds. With species
+  increases gone, many species tie for a class; the build notes the tie and
+  picks by source rank.
 - Callers that relied on the 2014 answer to an unscoped lookup (e.g.
   `get_class_details` for "bard") now get the 2024 row; pass
   `ruleset: "5e-2014"` to get the old one.

@@ -27,6 +27,7 @@ src/
   character-build/
     builder.ts              Build engine: picks, then works out the numbers
     abilities.ts            Standard array, increases, ASI planning (rules, cited)
+    legacy.ts               2014 species and backgrounds in 2024 builds (2024 PHB)
     prerequisites.ts        Feat prerequisite checks
     heuristics.ts           Judgment calls: role fit, spell weights, staple spells
     types.ts                Build options and output

@@ -10,6 +10,7 @@ import {
 import { checkPrerequisite } from '../../dist/character-build/prerequisites.js';
 import { spellRoles, roleFit } from '../../dist/character-build/heuristics.js';
 import { heavyWeaponWeaknesses, usesHeavyWeapons } from '../../dist/character-build/builder.js';
+import { isLegacy, speciesIncreasesFor, LEGACY_BACKGROUND_ABILITIES } from '../../dist/character-build/legacy.js';
 
 const tens = { strength: 10, dexterity: 10, constitution: 10, intelligence: 10, wisdom: 10, charisma: 10 };
 
@@ -190,5 +191,28 @@ describe('Heavy weapons', () => {
 
   test('SRD 5.2: not mentioned for classes without Martial weapons', () => {
     assert.deepEqual(heavyWeaponWeaknesses('5e-2024', small, { strength: 8, dexterity: 8 }, false), []);
+  });
+});
+
+// 2024 Player's Handbook, backgrounds and species from older books.
+describe('2014 options in a 2024 build', () => {
+  const stoor = { fixed: { dexterity: 2, constitution: 1 }, choices: [] };
+
+  test('only a 2014 option in a 2024 build is legacy', () => {
+    assert.equal(isLegacy('5e-2014', '5e-2024'), true);
+    assert.equal(isLegacy('5e-2024', '5e-2024'), false);
+    assert.equal(isLegacy('5e-2014', '5e-2014'), false);
+    assert.equal(isLegacy('5e-2024', '5e-2014'), false, 'the book describes older options in newer games only');
+    assert.equal(isLegacy('a5e', '5e-2024'), false);
+    assert.equal(isLegacy(null, '5e-2024'), false);
+  });
+
+  test('a 2014 species loses its ability score increases in a 2024 build, and only there', () => {
+    assert.deepEqual(speciesIncreasesFor(stoor, '5e-2014', '5e-2024'), { fixed: {}, choices: [] });
+    assert.deepEqual(speciesIncreasesFor(stoor, '5e-2014', '5e-2014'), stoor);
+  });
+
+  test('a 2014 background may raise any ability', () => {
+    assert.equal(LEGACY_BACKGROUND_ABILITIES.length, 6);
   });
 });

@@ -109,6 +109,10 @@ const feats = [
   { key: 'srd_grappler', name: 'Grappler', document: srd, type: 'GENERAL', has_prerequisite: true,
     prerequisite: 'Strength 13 or higher', desc: 'You have advantage on attack rolls against a creature you are grappling.',
     benefits: [] },
+  { key: 'srd-2024_alert', name: 'Alert', document: srd24, type: 'Origin', has_prerequisite: false,
+    prerequisite: '', desc: 'You gain a bonus to initiative.', benefits: [] },
+  { key: 'srd-2024_savage-attacker', name: 'Savage Attacker', document: srd24, type: 'Origin', has_prerequisite: false,
+    prerequisite: '', desc: 'Roll damage twice.', benefits: [] },
   { key: 'a5e-ag_ace-driver', name: 'Ace Driver', document: a5e, type: 'GENERAL', has_prerequisite: true,
     prerequisite: 'Proficiency with a type of vehicle', desc: 'You drive well and deal damage.', benefits: [] }
 ];
@@ -278,6 +282,44 @@ describe('character builds', () => {
     assert.equal(build.race.key, 'srd-2024_halfling');
     assert.equal(build.background.name, 'Soldier');
     assert.equal(build.abilityScores.atFirstLevel.strength, 17, 'the background gives +2, the species nothing');
+  });
+
+  // 2024 Player's Handbook: 2014 species and backgrounds in 2024 games.
+  const MIXED = { sources: ['srd-2024', 'srd-2014'] };
+
+  test('a 2014 species in a 2024 build keeps its traits but not its increases', async () => {
+    const build = await builder().build({ scope: MIXED, preferredRace: 'lightfoot', preferredClass: 'fighter', playstyle: 'tank' });
+
+    assert.equal(build.ruleset, '5e-2024');
+    assert.equal(build.race.key, 'srd_lightfoot');
+    assert.deepEqual(build.race.abilityScoreIncreases, { fixed: {}, choices: [] });
+    assert.ok(build.race.traits.includes('Lucky'));
+    assert.equal(build.race.walkingSpeed, 25, '2014 traits are used as they are');
+    assert.equal(build.background.name, 'Soldier');
+    assert.deepEqual(build.abilityScores.steps.slice(0, 2), ['Soldier: +2 strength', 'Soldier: +1 constitution']);
+    assert.equal(build.abilityScores.atFirstLevel.dexterity, build.abilityScores.base.dexterity, 'no Halfling +2 Dex');
+    assert.ok(build.notes.some(n => /Lightfoot is a 2014 species in a 2024 build/.test(n)));
+    assert.ok(!build.warnings.some(w => /mixed/.test(w)));
+  });
+
+  test('a 2014 background in a 2024 build gives +2/+1 to any abilities and an Origin feat', async () => {
+    const build = await builder().build({
+      scope: MIXED, preferredClass: 'fighter', preferredBackground: 'acolyte', playstyle: 'tank'
+    });
+
+    assert.equal(build.background.name, 'Acolyte');
+    assert.equal(build.abilityScores.atFirstLevel.strength, 17, 'Acolyte lists no abilities; any may rise');
+    assert.ok(build.levelProgression[0].choices.includes('Origin feat from Acolyte: Alert'),
+      'a tank prefers Alert (ORIGIN_FEAT_PREFERENCE)');
+    assert.ok(build.notes.some(n => /Acolyte is a 2014 background in a 2024 build/.test(n)));
+  });
+
+  test('a 2024 species in a 2014 build is flagged: neither gives it increases', async () => {
+    const build = await builder().build({ scope: MIXED, preferredClass: 'bard', preferredRace: 'halfling' });
+
+    assert.equal(build.ruleset, '5e-2014');
+    assert.equal(build.race.key, 'srd-2024_halfling');
+    assert.ok(build.warnings.some(w => /Halfling is a 2024 species in a 2014 build/.test(w)));
   });
 
   test('a 2024 Small species wields Heavy weapons without the 2014 size penalty', async () => {

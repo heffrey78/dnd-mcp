@@ -59,7 +59,10 @@ a `source` label (document key, title and ruleset), and lookups by name
 prefer the 2024 SRD, then the 2014 SRD. Character builds default to the 2024
 SRD only (see [ADR-008](docs/adr/008-default-to-2024.md)); pass
 `ruleset: "5e-2014"` or `sources: ["srd-2014"]` for the older rules. An
-unknown ruleset or document is an error.
+unknown ruleset or document is an error. A build that mixes editions, e.g.
+`sources: ["srd-2024", "open5e"]`, uses 2014 species and backgrounds the way
+the 2024 Player's Handbook allows: the species keeps its traits, and ability
+increases come from the background.
 
 ### Universal search
 

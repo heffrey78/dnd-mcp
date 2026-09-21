@@ -185,3 +185,16 @@ export const EXPERIENCE_TIPS: Readonly<Record<string, string>> = {
   intermediate: 'Combine species traits with class features and plan your Ability Score Improvements.',
   advanced: 'Squeeze value from action economy, concentration and feat choices.'
 };
+
+/**
+ * Which Origin feat a 2014 background takes in a 2024 build, best first.
+ * Names match SRD 5.2's four Origin feats; any other Origin feat in scope
+ * ranks after these, alphabetically.
+ */
+export const ORIGIN_FEAT_PREFERENCE: Readonly<Record<Playstyle, readonly string[]>> = {
+  damage: ['Savage Attacker', 'Alert', 'Magic Initiate', 'Skilled'],
+  support: ['Magic Initiate', 'Alert', 'Skilled', 'Savage Attacker'],
+  tank: ['Alert', 'Savage Attacker', 'Skilled', 'Magic Initiate'],
+  utility: ['Skilled', 'Magic Initiate', 'Alert', 'Savage Attacker'],
+  balanced: ['Alert', 'Skilled', 'Magic Initiate', 'Savage Attacker']
+};
