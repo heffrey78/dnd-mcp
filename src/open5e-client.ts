@@ -7,6 +7,10 @@ import {
   documentKeyOf, pickByName, resolveScope, sourceOf, toSourceLabel
 } from './sources.js';
 
+import {
+  ABILITIES, type CasterType, type Ruleset, classRulesFor, keyAbilityList, spellSlots
+} from './class-rules.js';
+
 export type { ContentScope, SourceLabel } from './sources.js';
 
 // Enhanced interfaces based on Open5e API structure
@@ -45,16 +49,29 @@ export interface EnhancedSpellData {
   };
 }
 
+export interface ClassFeature {
+  name: string;
+  key: string;
+  /** Levels at which the feature is gained or improves, ascending. */
+  levels: number[];
+  /** Per-level detail where Open5e gives one, e.g. { 5: "d8" } for Bardic Inspiration. */
+  details: Record<number, string>;
+  description: string;
+}
+
 export interface EnhancedClassData {
   name: string;
+  key: string;
+  /** "d8". */
   hitDie: string;
+  /** The abilities the class is built around (see class-rules.ts). */
   primaryAbility: string[];
   savingThrows: string[];
   description: string;
   subclasses: string[];
+  source: SourceLabel;
   url: string;
-  
-  // Enhanced fields
+
   hpAt1stLevel?: string;
   hpAtHigherLevels?: string;
   proficiencies: {
@@ -64,12 +81,20 @@ export interface EnhancedClassData {
     skills?: string;
   };
   equipment?: string;
-  progressionTable?: string;
   spellcastingAbility?: string;
+  casterType: CasterType | null;
+  /** Slots per spell level (index 0 = 1st) for class levels 1-20; null for non-casters. */
+  spellSlotsByLevel: number[][] | null;
+  /** Class features in the order they are gained. */
+  features: ClassFeature[];
+  /** Other per-level class table columns ("Cantrips Known", "Proficiency Bonus", ...). */
+  tableColumns: Record<string, Record<number, string>>;
   detailedArchetypes: Array<{
     name: string;
+    key: string;
     desc: string;
-    [key: string]: any;
+    source: SourceLabel;
+    features: ClassFeature[];
   }>;
 }
 
@@ -342,7 +367,7 @@ export class Open5eClient {
   async query<E extends EndpointName>(
     endpoint: E,
     filters: FiltersFor<E> = {},
-    options: { limit?: number; ordering?: string } = {}
+    options: { limit?: number; ordering?: string; fields?: string[] } = {}
   ): Promise<{ count: number; rows: any[]; hasMore: boolean }> {
     const spec: EndpointSpec = ENDPOINTS[endpoint];
     const params: Record<string, any> = {};
@@ -367,6 +392,9 @@ export class Open5eClient {
       }
       params.ordering = options.ordering;
     }
+
+    // Sparse fieldsets: v2 returns only the named fields.
+    if (options.fields !== undefined) params.fields = options.fields;
 
     let result: { count: number; rows: any[]; hasMore: boolean };
 
@@ -621,14 +649,6 @@ export class Open5eClient {
     return match ? `${match[1]} ${match[2]}` : text;
   }
 
-  private extractPrimaryAbilities(classData: any): string[] {
-    // Extract from saving throws as primary indicator
-    if (classData.prof_saving_throws) {
-      return classData.prof_saving_throws.split(',').map((s: string) => s.trim());
-    }
-    return [];
-  }
-
   private transformSpell(spell: any): EnhancedSpellData {
     return {
       name: spell.name,
@@ -868,78 +888,143 @@ export class Open5eClient {
     }
   }
 
-  async searchClasses(): Promise<{ count: number; results: EnhancedClassData[]; hasMore: boolean }> {
-    const response = await this.makeRequest<Open5eResponse<any>>('/v1/classes/');
+  // Classes
+  async searchClasses(options: {
+    scope?: ContentScope;
+  } = {}): Promise<{ count: number; results: EnhancedClassData[]; hasMore: boolean }> {
+    const documents = await this.scopeDocuments(options.scope);
+    const [base, subclasses] = await Promise.all([
+      this.query('classes', { isSubclass: false, documents }, { limit: PAGE_MAX }),
+      this.query('classes', { isSubclass: true, documents }, {
+        limit: PAGE_MAX, fields: ['key', 'name', 'subclass_of', 'document']
+      })
+    ]);
 
-    const transformedResults: EnhancedClassData[] = response.results.map(cls => ({
-      // Current MCP format fields
-      name: cls.name,
-      hitDie: cls.hit_dice,
-      primaryAbility: this.extractPrimaryAbilities(cls),
-      savingThrows: cls.prof_saving_throws ? 
-        cls.prof_saving_throws.split(',').map((s: string) => s.trim()) : [],
-      description: cls.desc || '',
-      subclasses: cls.archetypes?.map((arch: any) => arch.name) || [],
-      url: cls.url,
-      
-      // Enhanced fields
-      hpAt1stLevel: cls.hp_at_1st_level,
-      hpAtHigherLevels: cls.hp_at_higher_levels,
-      proficiencies: {
-        armor: cls.prof_armor,
-        weapons: cls.prof_weapons,
-        tools: cls.prof_tools,
-        skills: cls.prof_skills
-      },
-      equipment: cls.equipment,
-      progressionTable: cls.table,
-      spellcastingAbility: cls.spellcasting_ability,
-      detailedArchetypes: cls.archetypes || []
-    }));
+    const results = base.rows.map(cls => this.transformClass(cls,
+      subclasses.rows.filter(sub => sub.subclass_of?.key === cls.key)));
+    return { count: base.count, results, hasMore: base.hasMore };
+  }
+
+  /**
+   * A class with its subclasses. `className` may be a name ("bard") or a key
+   * ("srd-2024_bard"); a name resolves within the scope, preferring the SRD.
+   */
+  async getClassDetails(className: string, scope?: ContentScope): Promise<EnhancedClassData | null> {
+    const found = await this.findBaseClass(className, scope);
+    if (!found) return null;
+
+    const [cls, subclasses] = await Promise.all([
+      this.makeRequest<any>(`/v2/classes/${found.key}/`),
+      this.query('classes', {
+        subclassOf: found.key,
+        documents: await this.scopeDocuments(scope)
+      }, { limit: PAGE_MAX })
+    ]);
+    await this.embedDocuments([cls]);
+    return this.transformClass(cls, subclasses.rows);
+  }
+
+  private transformClass(cls: any, subclassRows: any[]): EnhancedClassData {
+    const features: any[] = cls.features ?? [];
+    const source = sourceOf(cls);
+    const rules = classRulesFor(cls.name ?? '');
+    const traits = this.parseClassTraits(features);
+
+    const casterType: CasterType | null = rules?.casterType
+      ?? (typeof cls.caster_type === 'string' ? cls.caster_type.toLowerCase() as CasterType : null);
+    const ruleset: Ruleset = source.ruleset === '5e-2024' ? '5e-2024' : '5e-2014';
+
+    // Any feature carrying per-level data is a class table column; the 2014
+    // "Spells Known" column is mis-tagged as a level feature, so the type
+    // alone is not enough. Slot columns are left out: Open5e's 2014 ones have
+    // gaps, and the slots come from class-rules.ts instead.
+    const isColumn = (f: any) => (f.data ?? []).length > 0 && (f.gained_at ?? []).length === 0;
+    const tableColumns: Record<string, Record<number, string>> = {};
+    for (const feature of features) {
+      if (!isColumn(feature) || feature.feature_type === 'SPELL_SLOTS') continue;
+      tableColumns[feature.name] = Object.fromEntries(
+        (feature.data ?? []).map((cell: any) => [cell.level, cell.column_value]));
+    }
 
     return {
-      count: response.count,
-      results: transformedResults,
-      hasMore: !!response.next
+      name: cls.name,
+      key: cls.key ?? '',
+      hitDie: String(cls.hit_dice ?? '').toLowerCase(),
+      primaryAbility: rules ? keyAbilityList(rules) : this.parseAbilities(traits['primary ability']),
+      savingThrows: (cls.saving_throws ?? []).map((save: any) => save.name),
+      description: cls.desc || '',
+      subclasses: subclassRows.map(sub => sub.name),
+      source,
+      url: cls.key ? `https://api.open5e.com/v2/classes/${cls.key}/` : '',
+
+      hpAt1stLevel: cls.hit_points?.hit_points_at_1st_level,
+      hpAtHigherLevels: cls.hit_points?.hit_points_at_higher_levels,
+      proficiencies: {
+        armor: traits['armor'] ?? traits['armor training'],
+        weapons: traits['weapons'] ?? traits['weapon proficiencies'],
+        tools: traits['tools'] ?? traits['tool proficiencies'],
+        skills: traits['skills'] ?? traits['skill proficiencies']
+      },
+      equipment: traits['starting equipment']
+        ?? features.find(f => f.feature_type === 'STARTING_EQUIPMENT')?.desc,
+      spellcastingAbility: rules?.spellcastingAbility ?? undefined,
+      casterType,
+      spellSlotsByLevel: casterType && casterType !== 'none'
+        ? Array.from({ length: 20 }, (_, i) => spellSlots(casterType, i + 1, ruleset).byLevel)
+        : null,
+      features: features
+        .filter(f => f.feature_type === 'CLASS_LEVEL_FEATURE' && !isColumn(f))
+        .map(f => this.transformClassFeature(f))
+        .sort((a, b) => (a.levels[0] ?? 0) - (b.levels[0] ?? 0) || a.name.localeCompare(b.name)),
+      tableColumns,
+      detailedArchetypes: subclassRows.map(sub => ({
+        name: sub.name,
+        key: sub.key ?? '',
+        desc: sub.desc ?? '',
+        source: sourceOf(sub),
+        features: (sub.features ?? [])
+          .map((f: any) => this.transformClassFeature(f))
+          .sort((a: ClassFeature, b: ClassFeature) => (a.levels[0] ?? 0) - (b.levels[0] ?? 0))
+      }))
     };
   }
 
-  async getClassDetails(className: string): Promise<EnhancedClassData | null> {
-    try {
-      // Try direct lookup first
-      const response = await this.makeRequest<any>(`/v1/classes/${className.toLowerCase()}/`);
-      
-      return {
-        name: response.name,
-        hitDie: response.hit_dice,
-        primaryAbility: this.extractPrimaryAbilities(response),
-        savingThrows: response.prof_saving_throws ? 
-          response.prof_saving_throws.split(',').map((s: string) => s.trim()) : [],
-        description: response.desc || '',
-        subclasses: response.archetypes?.map((arch: any) => arch.name) || [],
-        url: response.url,
-        hpAt1stLevel: response.hp_at_1st_level,
-        hpAtHigherLevels: response.hp_at_higher_levels,
-        proficiencies: {
-          armor: response.prof_armor,
-          weapons: response.prof_weapons,
-          tools: response.prof_tools,
-          skills: response.prof_skills
-        },
-        equipment: response.equipment,
-        progressionTable: response.table,
-        spellcastingAbility: response.spellcasting_ability,
-        detailedArchetypes: response.archetypes || []
-      };
-    } catch (error) {
-      // Fallback to search
-      const searchResults = await this.searchClasses();
-      const match = searchResults.results.find(
-        cls => cls.name.toLowerCase() === className.toLowerCase()
-      );
-      
-      return match || null;
+  private transformClassFeature(feature: any): ClassFeature {
+    const gained: Array<{ level: number; detail: string | null }> = feature.gained_at ?? [];
+    return {
+      name: feature.name,
+      key: feature.key ?? '',
+      levels: gained.map(g => g.level).sort((a, b) => a - b),
+      details: Object.fromEntries(gained.filter(g => g.detail).map(g => [g.level, g.detail as string])),
+      description: feature.desc ?? ''
+    };
+  }
+
+  /**
+   * Proficiencies and other core traits, keyed by lower-cased label. 2014
+   * classes give them as "**Armor:** Light armor" lines in a PROFICIENCIES
+   * feature; 2024 classes as "|Armor Training|Light armor|" table rows.
+   */
+  private parseClassTraits(features: any[]): Record<string, string> {
+    const traits: Record<string, string> = {};
+    for (const feature of features) {
+      if (!['PROFICIENCIES', 'CORE_TRAITS_TABLE'].includes(feature.feature_type)) continue;
+      for (const line of String(feature.desc ?? '').split(/\r?\n/)) {
+        const bold = /^\*\*(.+?):\*\*\s*(.+)$/.exec(line.trim());
+        const row = /^\|([^|]+)\|([^|]+)\|$/.exec(line.trim());
+        const [label, value] = bold ? [bold[1], bold[2]] : row ? [row[1], row[2]] : [];
+        if (label && value && !/^-+$/.test(label.trim())) {
+          traits[label.trim().toLowerCase()] = value.trim();
+        }
+      }
     }
+    return traits;
+  }
+
+  /** "Strength or Dexterity" -> ['strength', 'dexterity']. */
+  private parseAbilities(text?: string): string[] {
+    if (!text) return [];
+    return ABILITIES.filter(ability => text.toLowerCase().includes(ability));
   }
 
   // New monster functionality

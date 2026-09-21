@@ -82,6 +82,7 @@ const SCOPE_PROPERTIES = {
 /** Tools that accept SCOPE_PROPERTIES. Passing them to any other tool is an error. */
 const SCOPED_TOOLS = new Set([
   'search_spells', 'get_spell_details', 'get_spell_by_level', 'get_spells_by_class',
+  'search_classes', 'get_class_details',
   'search_races', 'get_race_details',
   'search_weapons', 'search_armor', 'get_armor_details',
   'search_feats', 'get_feat_details',
@@ -297,7 +298,7 @@ const tools: Tool[] = [
   // Enhanced class tools
   {
     name: 'search_classes',
-    description: 'Get all D&D 5E classes with comprehensive details',
+    description: 'List D&D 5E base classes with their features and subclass names',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -305,7 +306,7 @@ const tools: Tool[] = [
   },
   {
     name: 'get_class_details',
-    description: 'Get detailed information about a specific D&D 5E class',
+    description: 'Get a D&D 5E class: hit die, proficiencies, features by level, spell slots and subclasses with their features',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1126,8 +1127,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Enhanced class tools
       case 'search_classes': {
-        const results = await open5eClient.searchClasses();
-        
+        const results = await open5eClient.searchClasses({ scope });
+
         return {
           content: [
             {
@@ -1144,7 +1145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'get_class_details': {
         const className = validateStringInput(args?.class_name, 'class_name');
 
-        const classData = await open5eClient.getClassDetails(className);
+        const classData = await open5eClient.getClassDetails(className, scope);
         if (!classData) {
           return {
             content: [

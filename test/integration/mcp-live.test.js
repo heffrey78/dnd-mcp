@@ -44,6 +44,16 @@ describe('MCP tools against the live API', () => {
     assert.ok(body.spells.every(s => s.level <= 1));
   });
 
+  test('get_class_details returns v2 features, SRD spell slots and subclasses', async () => {
+    const bard = toolJson(await server.callTool('get_class_details', { class_name: 'bard' }));
+
+    assert.equal(bard.key, 'srd_bard');
+    assert.deepEqual(bard.primaryAbility, ['charisma']);
+    assert.deepEqual(bard.spellSlotsByLevel[2], [4, 2]);
+    assert.ok(bard.features.some(f => f.name === 'Bardic Inspiration' && f.levels.includes(1)));
+    assert.ok(bard.subclasses.includes('College of Lore'));
+  });
+
   test('search_monsters returns only monsters matching the name', async () => {
     const body = toolJson(await server.callTool('search_monsters', { query: 'goblin' }));
 
