@@ -174,3 +174,38 @@ describe('caching', () => {
     assert.ok(mock.calls.length > before);
   });
 });
+
+describe('scope', () => {
+  const documents = [
+    { key: 'srd-2014', display_name: '5e 2014 Rules', gamesystem: { key: '5e-2014' } },
+    { key: 'srd-2024', display_name: '5e 2024 Rules', gamesystem: { key: '5e-2024' } }
+  ];
+
+  test('a scope is applied to every content type searched', async () => {
+    mock = installMockFetch(url => url.pathname === '/v2/documents/' ? page(documents) : page([]));
+    const engine = new UnifiedSearchEngine();
+
+    await engine.unifiedSearch({ query: 'fire', contentTypes: ['spells', 'feats'], scope: { ruleset: '5e-2024' } });
+
+    for (const path of ['/v2/spells/', '/v2/feats/']) {
+      const request = mock.calls.find(u => u.pathname === path);
+      assert.equal(request.searchParams.get('document__key__in'), 'srd-2024', path);
+    }
+  });
+
+  test('an unknown ruleset fails the search rather than returning nothing', async () => {
+    mock = installMockFetch(url => url.pathname === '/v2/documents/' ? page(documents) : page([]));
+    const engine = new UnifiedSearchEngine();
+
+    await assert.rejects(() => engine.unifiedSearch({ query: 'fire', scope: { ruleset: '5e-2099' } }), /Unknown ruleset/);
+  });
+
+  test('scoped and unscoped searches are cached separately', async () => {
+    mock = installMockFetch(url => url.pathname === '/v2/documents/' ? page(documents) : page([]));
+    const engine = new UnifiedSearchEngine();
+
+    await engine.unifiedSearch({ query: 'fire', contentTypes: ['spells'] });
+    await engine.unifiedSearch({ query: 'fire', contentTypes: ['spells'], scope: { ruleset: '5e-2014' } });
+    assert.equal(mock.calls.filter(u => u.pathname === '/v2/spells/').length, 2);
+  });
+});

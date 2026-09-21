@@ -101,6 +101,7 @@ const SCOPE_PROPERTIES = {
 
 /** Tools that accept SCOPE_PROPERTIES. Passing them to any other tool is an error. */
 const SCOPED_TOOLS = new Set([
+  'unified_search',
   'search_spells', 'get_spell_details', 'get_spell_by_level', 'get_spells_by_class',
   'search_classes', 'get_class_details',
   'search_races', 'get_race_details',
@@ -1028,7 +1029,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit: limit as number | undefined,
           includeDetails: include_details as boolean | undefined,
           fuzzyThreshold: fuzzy_threshold as number | undefined,
-          sortBy: sort_by as 'relevance' | 'name' | 'type' | undefined
+          sortBy: sort_by as 'relevance' | 'name' | 'type' | undefined,
+          scope
         };
         
         const results = await unifiedSearchEngine.unifiedSearch(searchOptions);
